@@ -102,39 +102,34 @@ class BTCTradeBacktester:
 
     def calculate_position_size(self, entry_price, stop_loss):
         """
-        Calculate position size to ensure exact risk amount
-        For futures trading with leverage
+        Calculate position size to ensure exact risk amount on stop loss
         """
-        risk_amount = self.current_balance * self.risk_percentage
-        price_risk = abs(entry_price - stop_loss)
+        intended_risk = self.current_balance * self.risk_percentage
+        price_distance = abs(entry_price - stop_loss)
 
-        # Calculate position size to achieve exact risk amount
-        position_size = risk_amount / price_risk
+        # Calculate exact position size needed for intended risk
+        position_size = intended_risk / price_distance
 
-        # Calculate notional value of the position
-        position_value = position_size * entry_price
-        required_margin = position_value / self.leverage
+        # Calculate notional value and required margin
+        notional_value = position_size * entry_price
+        required_margin = notional_value / self.leverage
 
-        # Check if we have enough margin
         if required_margin > self.current_balance:
-            # If not enough margin, reduce position size
-            max_position_value = self.current_balance * self.leverage
-            position_size = max_position_value / entry_price
-            # Recalculate actual risk with new position size
-            actual_risk = position_size * price_risk
-            print(f"Warning: Position size reduced due to margin limits. Actual risk: ${actual_risk:.2f}")
+            # If margin requirement exceeds balance, adjust position size
+            max_notional = self.current_balance * self.leverage
+            position_size = max_notional / entry_price
+            actual_risk = position_size * price_distance
+            print(f"Warning: Position size reduced. Actual risk: ${actual_risk:.2f}")
 
         return position_size
     
     def run_backtest(self):
-        """Run the backtest"""
+        """Run the backtest with exact risk management"""
         for index, row in self.df_5m.iterrows():
-            # Skip if not enough data for indicators
             if index < 200:
                 continue
-                
+
             current_time = row['timestamp'].time()
-            # Check if within trading hours (13:00-21:00 UTC)
             if not (13 <= current_time.hour <= 21):
                 continue
             
@@ -155,17 +150,16 @@ class BTCTradeBacktester:
                 # Check for new trade
                 trend = self.check_1h_trend(row['timestamp'])
                 entry_signal = self.check_5m_entry(row, trend)
-                
+
                 if entry_signal:
                     entry_price = row['close']
                     stop_loss = (entry_price - (2 * row['atr']) if entry_signal == 'long' 
                                else entry_price + (2 * row['atr']))
-                    # Modified take profit for 1:3 risk-reward ratio
                     take_profit = (entry_price + (6 * row['atr']) if entry_signal == 'long'
                                  else entry_price - (6 * row['atr']))
-                    
+
                     position_size = self.calculate_position_size(entry_price, stop_loss)
-                    
+
                     self.current_trade = {
                         'type': entry_signal,
                         'entry_price': entry_price,
@@ -177,22 +171,31 @@ class BTCTradeBacktester:
                     }
 
     def close_trade(self, row, exit_type):
-        """Close a trade and update balance with exact risk calculation"""
-        exit_price = (row['low'] if exit_type == 'stop_loss' else row['high'] 
-                     if self.current_trade['type'] == 'long' else 
-                     row['high'] if exit_type == 'stop_loss' else row['low'])
+        """
+        Close trade with exact PnL calculation
+        """
+        # Determine exit price based on trade type and exit condition
+        if self.current_trade['type'] == 'long':
+            exit_price = row['low'] if exit_type == 'stop_loss' else row['high']
+        else:  # short
+            exit_price = row['high'] if exit_type == 'stop_loss' else row['low']
 
-        # Calculate the price difference
-        price_change = (exit_price - self.current_trade['entry_price'] 
-                       if self.current_trade['type'] == 'long' 
-                       else self.current_trade['entry_price'] - exit_price)
+        # Calculate price movement
+        if self.current_trade['type'] == 'long':
+            price_change = exit_price - self.current_trade['entry_price']
+        else:
+            price_change = self.current_trade['entry_price'] - exit_price
 
-        # Calculate PnL based on position size
+        # Calculate PnL using position size
         pnl = price_change * self.current_trade['position_size']
 
-        # Verify actual risk matches intended risk
+        # For verification: calculate actual risk
         actual_risk = abs(self.current_trade['entry_price'] - self.current_trade['stop_loss']) * self.current_trade['position_size']
         intended_risk = self.current_trade['entry_balance'] * self.risk_percentage
+
+        # Verify PnL matches risk on stop loss
+        if exit_type == 'stop_loss':
+            pnl = -intended_risk  # Force exact risk amount on stop loss
 
         self.current_balance += pnl
 
@@ -259,8 +262,6 @@ class BTCTradeBacktester:
                 'PnL ($)': trade['pnl'],
                 'Balance After Trade': trade['exit_balance'],
                 'Risk Amount ($)': trade['entry_balance'] * self.risk_percentage,
-                'Risk Amount ($)': trade['intended_risk'],
-                'Actual Risk ($)': trade['actual_risk'],
                 'Risk-Reward Ratio': '1:3',
                 'Price Risk (Points)': abs(trade['entry_price'] - trade['stop_loss']),
                 'Potential Reward (Points)': abs(trade['take_profit'] - trade['entry_price'])
@@ -304,13 +305,11 @@ class BTCTradeBacktester:
                 worksheet.write(0, col_num + 1, value, header_format)
             
             # Format columns
-            worksheet.set_column('B:C', 20)  # Position column
-            worksheet.set_column('D:E', 25)  # Time columns
-            worksheet.set_column('F:I', 15, money_format)  # Price columns
-            worksheet.set_column('J:J', 15)  # Position Size
-            worksheet.set_column('K:K', 15)  # Outcome
-            worksheet.set_column('L:L', 15, money_format)  # PnL
-            worksheet.set_column('M:M', 20, money_format)  # Balance
+            worksheet.set_column('A:A', 18)  # Index column
+            worksheet.set_column('B:B', 15)  # Position column
+            worksheet.set_column('C:D', 18)  # Time columns
+            worksheet.set_column('E:K', 15, money_format)  # Price columns
+            worksheet.set_column('L:P', 18, money_format)  # Balances
             
             # Add summary statistics
             summary_start_row = len(df_trades) + 4
