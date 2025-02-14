@@ -33,10 +33,11 @@ def calculate_supertrend(df, period=10, multiplier=3):
     return supertrend, direction
 
 class BTCTradeBacktester:
-    def __init__(self, initial_balance=10000.0, risk_percentage=0.01):
+    def __init__(self, initial_balance=10000.0, risk_percentage=0.01, leverage=20):
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
         self.risk_percentage = risk_percentage
+        self.leverage = leverage  # Added leverage parameter
         self.trades = []
         self.current_trade = None
         
@@ -98,12 +99,24 @@ class BTCTradeBacktester:
                    row['stoch_k'] > 80 and 
                    row['stoch_k'] < row['stoch_d'] else None)
         return None
-    
+
     def calculate_position_size(self, entry_price, stop_loss):
-        """Calculate position size based on risk"""
+        """Calculate position size based on risk with leverage"""
         risk_amount = self.current_balance * self.risk_percentage
         price_risk = abs(entry_price - stop_loss)
-        return risk_amount / price_risk
+        
+        # Calculate the required margin with leverage
+        position_value = (risk_amount / price_risk) * entry_price
+        required_margin = position_value / self.leverage
+        
+        if required_margin > self.current_balance:
+            # Adjust position size if required margin exceeds balance
+            position_size = (self.current_balance * self.leverage) / entry_price
+        else:
+            # Use the risk-based position size
+            position_size = risk_amount / price_risk
+            
+        return position_size
     
     def run_backtest(self):
         """Run the backtest"""
@@ -160,23 +173,28 @@ class BTCTradeBacktester:
         exit_price = (row['low'] if exit_type == 'stop_loss' else row['high'] 
                      if self.current_trade['type'] == 'long' else 
                      row['high'] if exit_type == 'stop_loss' else row['low'])
-    
+        
+        # Calculate actual profit/loss considering leverage
         price_change = (exit_price - self.current_trade['entry_price'] 
                        if self.current_trade['type'] == 'long' 
                        else self.current_trade['entry_price'] - exit_price)
-    
+        
+        # Position size already accounts for leverage in calculation
         pnl = price_change * self.current_trade['position_size']
         self.current_balance += pnl
-    
+        
         trade_record = {
             **self.current_trade,
             'exit_price': exit_price,
             'exit_time': row['timestamp'],
             'exit_type': exit_type,
             'pnl': pnl,
-            'exit_balance': self.current_balance
+            'exit_balance': self.current_balance,
+            'actual_risk': abs(self.current_trade['entry_price'] - 
+                             self.current_trade['stop_loss']) * 
+                             self.current_trade['position_size']
         }
-
+        
         self.trades.append(trade_record)
         self.current_trade = None
 
