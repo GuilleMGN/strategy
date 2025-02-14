@@ -101,21 +101,29 @@ class BTCTradeBacktester:
         return None
 
     def calculate_position_size(self, entry_price, stop_loss):
-        """Calculate position size based on risk with leverage"""
+        """
+        Calculate position size to ensure exact risk amount
+        For futures trading with leverage
+        """
         risk_amount = self.current_balance * self.risk_percentage
         price_risk = abs(entry_price - stop_loss)
-        
-        # Calculate the required margin with leverage
-        position_value = (risk_amount / price_risk) * entry_price
+
+        # Calculate position size to achieve exact risk amount
+        position_size = risk_amount / price_risk
+
+        # Calculate notional value of the position
+        position_value = position_size * entry_price
         required_margin = position_value / self.leverage
-        
+
+        # Check if we have enough margin
         if required_margin > self.current_balance:
-            # Adjust position size if required margin exceeds balance
-            position_size = (self.current_balance * self.leverage) / entry_price
-        else:
-            # Use the risk-based position size
-            position_size = risk_amount / price_risk
-            
+            # If not enough margin, reduce position size
+            max_position_value = self.current_balance * self.leverage
+            position_size = max_position_value / entry_price
+            # Recalculate actual risk with new position size
+            actual_risk = position_size * price_risk
+            print(f"Warning: Position size reduced due to margin limits. Actual risk: ${actual_risk:.2f}")
+
         return position_size
     
     def run_backtest(self):
@@ -169,20 +177,25 @@ class BTCTradeBacktester:
                     }
 
     def close_trade(self, row, exit_type):
-        """Close a trade and update balance"""
+        """Close a trade and update balance with exact risk calculation"""
         exit_price = (row['low'] if exit_type == 'stop_loss' else row['high'] 
                      if self.current_trade['type'] == 'long' else 
                      row['high'] if exit_type == 'stop_loss' else row['low'])
-        
-        # Calculate actual profit/loss considering leverage
+
+        # Calculate the price difference
         price_change = (exit_price - self.current_trade['entry_price'] 
                        if self.current_trade['type'] == 'long' 
                        else self.current_trade['entry_price'] - exit_price)
-        
-        # Position size already accounts for leverage in calculation
+
+        # Calculate PnL based on position size
         pnl = price_change * self.current_trade['position_size']
+
+        # Verify actual risk matches intended risk
+        actual_risk = abs(self.current_trade['entry_price'] - self.current_trade['stop_loss']) * self.current_trade['position_size']
+        intended_risk = self.current_trade['entry_balance'] * self.risk_percentage
+
         self.current_balance += pnl
-        
+
         trade_record = {
             **self.current_trade,
             'exit_price': exit_price,
@@ -190,11 +203,10 @@ class BTCTradeBacktester:
             'exit_type': exit_type,
             'pnl': pnl,
             'exit_balance': self.current_balance,
-            'actual_risk': abs(self.current_trade['entry_price'] - 
-                             self.current_trade['stop_loss']) * 
-                             self.current_trade['position_size']
+            'intended_risk': intended_risk,
+            'actual_risk': actual_risk
         }
-        
+
         self.trades.append(trade_record)
         self.current_trade = None
 
@@ -247,6 +259,8 @@ class BTCTradeBacktester:
                 'PnL ($)': trade['pnl'],
                 'Balance After Trade': trade['exit_balance'],
                 'Risk Amount ($)': trade['entry_balance'] * self.risk_percentage,
+                'Risk Amount ($)': trade['intended_risk'],
+                'Actual Risk ($)': trade['actual_risk'],
                 'Risk-Reward Ratio': '1:3',
                 'Price Risk (Points)': abs(trade['entry_price'] - trade['stop_loss']),
                 'Potential Reward (Points)': abs(trade['take_profit'] - trade['entry_price'])
