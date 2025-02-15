@@ -37,7 +37,7 @@ class BTCTradeBacktester:
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
         self.risk_percentage = risk_percentage
-        self.leverage = leverage  # Added leverage parameter
+        self.leverage = leverage
         self.trades = []
         self.current_trade = None
         
@@ -102,25 +102,25 @@ class BTCTradeBacktester:
 
     def calculate_position_size(self, entry_price, stop_loss):
         """
-        Calculate position size to ensure exact risk amount on stop loss
+        Calculate position size to ensure exact risk amount and reward based on 1:3 RR ratio
         """
-        intended_risk = self.current_balance * self.risk_percentage
+        risk_amount = self.current_balance * self.risk_percentage
         price_distance = abs(entry_price - stop_loss)
-
-        # Calculate exact position size needed for intended risk
-        position_size = intended_risk / price_distance
-
+        
+        # Calculate position size based on risk amount
+        position_size = risk_amount / price_distance
+        
         # Calculate notional value and required margin
         notional_value = position_size * entry_price
         required_margin = notional_value / self.leverage
-
+        
         if required_margin > self.current_balance:
-            # If margin requirement exceeds balance, adjust position size
+            # Adjust position size if margin requirement exceeds balance
             max_notional = self.current_balance * self.leverage
             position_size = max_notional / entry_price
             actual_risk = position_size * price_distance
             print(f"Warning: Position size reduced. Actual risk: ${actual_risk:.2f}")
-
+        
         return position_size
     
     def run_backtest(self):
@@ -172,30 +172,27 @@ class BTCTradeBacktester:
 
     def close_trade(self, row, exit_type):
         """
-        Close trade with exact PnL calculation
+        Close trade with exact PnL calculation based on 1:3 risk-reward ratio
         """
+        risk_amount = self.current_trade['entry_balance'] * self.risk_percentage
+        
         # Determine exit price based on trade type and exit condition
         if self.current_trade['type'] == 'long':
             exit_price = row['low'] if exit_type == 'stop_loss' else row['high']
         else:  # short
             exit_price = row['high'] if exit_type == 'stop_loss' else row['low']
 
-        # Calculate price movement
-        if self.current_trade['type'] == 'long':
-            price_change = exit_price - self.current_trade['entry_price']
-        else:
-            price_change = self.current_trade['entry_price'] - exit_price
-
-        # Calculate PnL using position size
-        pnl = price_change * self.current_trade['position_size']
-
-        # For verification: calculate actual risk
-        actual_risk = abs(self.current_trade['entry_price'] - self.current_trade['stop_loss']) * self.current_trade['position_size']
-        intended_risk = self.current_trade['entry_balance'] * self.risk_percentage
-
-        # Verify PnL matches risk on stop loss
+        # Calculate PnL based on exit type
         if exit_type == 'stop_loss':
-            pnl = -intended_risk  # Force exact risk amount on stop loss
+            pnl = -risk_amount  # Exact risk amount on stop loss
+        elif exit_type == 'take_profit':
+            pnl = risk_amount * 3  # Exactly 3x risk amount on take profit
+        else:
+            # For any other exit type, calculate actual PnL
+            if self.current_trade['type'] == 'long':
+                pnl = (exit_price - self.current_trade['entry_price']) * self.current_trade['position_size']
+            else:  # short
+                pnl = (self.current_trade['entry_price'] - exit_price) * self.current_trade['position_size']
 
         self.current_balance += pnl
 
@@ -206,8 +203,9 @@ class BTCTradeBacktester:
             'exit_type': exit_type,
             'pnl': pnl,
             'exit_balance': self.current_balance,
-            'intended_risk': intended_risk,
-            'actual_risk': actual_risk
+            'risk_amount': risk_amount,
+            'reward_amount': risk_amount * 3,
+            'actual_risk_reward': abs(pnl / risk_amount) if risk_amount != 0 else 0
         }
 
         self.trades.append(trade_record)
@@ -308,7 +306,9 @@ class BTCTradeBacktester:
             worksheet.set_column('A:A', 18)  # Index column
             worksheet.set_column('B:B', 15)  # Position column
             worksheet.set_column('C:D', 18)  # Time columns
-            worksheet.set_column('E:K', 15, money_format)  # Price columns
+            worksheet.set_column('E:H', 15, money_format)  # Price columns
+            worksheet.set_column('I:J', 15)  # Position Outcome
+            worksheet.set_column('K:K', 15, money_format)  # PnL columns
             worksheet.set_column('L:P', 18, money_format)  # Balances
             
             # Add summary statistics
