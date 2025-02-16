@@ -101,21 +101,16 @@ class BTCTradeBacktester:
         return None
 
     def calculate_position_size(self, entry_price, stop_loss):
-        """
-        Calculate position size to ensure exact risk amount and reward based on 1:3 RR ratio
-        """
+        """Calculate position size based on risk"""
         risk_amount = self.current_balance * self.risk_percentage
         price_distance = abs(entry_price - stop_loss)
-        
-        # Calculate position size based on risk amount
         position_size = risk_amount / price_distance
         
-        # Calculate notional value and required margin
+        # Check leverage limits
         notional_value = position_size * entry_price
         required_margin = notional_value / self.leverage
         
         if required_margin > self.current_balance:
-            # Adjust position size if margin requirement exceeds balance
             max_notional = self.current_balance * self.leverage
             position_size = max_notional / entry_price
             actual_risk = position_size * price_distance
@@ -172,30 +167,40 @@ class BTCTradeBacktester:
 
     def close_trade(self, row, exit_type):
         """
-        Close trade with exact PnL calculation based on 1:3 risk-reward ratio
+        Enhanced trade closing with:
+        - Exact risk amount on stop losses
+        - Full profit capture on winning trades
         """
+        # Calculate base risk amount
         risk_amount = self.current_trade['entry_balance'] * self.risk_percentage
         
-        # Determine exit price based on trade type and exit condition
-        if self.current_trade['type'] == 'long':
-            exit_price = row['low'] if exit_type == 'stop_loss' else row['high']
-        else:  # short
-            exit_price = row['high'] if exit_type == 'stop_loss' else row['low']
-
-        # Calculate PnL based on exit type
         if exit_type == 'stop_loss':
-            pnl = -risk_amount  # Exact risk amount on stop loss
-        elif exit_type == 'take_profit':
-            pnl = risk_amount * 3  # Exactly 3x risk amount on take profit
-        else:
-            # For any other exit type, calculate actual PnL
+            # Force exact risk amount on stop loss
+            pnl = -risk_amount
+            # Use stop loss price for record keeping
+            exit_price = self.current_trade['stop_loss']
+        else:  # take_profit or other exit types
+            # Capture full movement for winning trades
             if self.current_trade['type'] == 'long':
-                pnl = (exit_price - self.current_trade['entry_price']) * self.current_trade['position_size']
+                exit_price = row['high']
+                price_change = exit_price - self.current_trade['entry_price']
             else:  # short
-                pnl = (self.current_trade['entry_price'] - exit_price) * self.current_trade['position_size']
-
+                exit_price = row['low']
+                price_change = self.current_trade['entry_price'] - exit_price
+            
+            # Calculate actual PnL for winning trades
+            pnl = price_change * self.current_trade['position_size']
+        
+        # Calculate R-multiple achieved
+        r_multiple = abs(pnl / risk_amount)
+        
+        # Calculate how far beyond 3R we went (if applicable)
+        excess_r = max(0, r_multiple - 3) if exit_type == 'take_profit' else 0
+        
+        # Update balance
         self.current_balance += pnl
-
+        
+        # Enhanced trade record with detailed metrics
         trade_record = {
             **self.current_trade,
             'exit_price': exit_price,
@@ -204,47 +209,61 @@ class BTCTradeBacktester:
             'pnl': pnl,
             'exit_balance': self.current_balance,
             'risk_amount': risk_amount,
-            'reward_amount': risk_amount * 3,
-            'actual_risk_reward': abs(pnl / risk_amount) if risk_amount != 0 else 0
+            'base_target': risk_amount * 3,  # Standard 3R target
+            'r_multiple': r_multiple,
+            'excess_r': excess_r,
+            'price_movement': (price_change if exit_type != 'stop_loss' 
+                             else exit_price - self.current_trade['entry_price']),
+            'movement_percentage': (
+                (price_change / self.current_trade['entry_price'] * 100) 
+                if exit_type != 'stop_loss' 
+                else -self.risk_percentage * 100
+            )
         }
-
+        
         self.trades.append(trade_record)
         self.current_trade = None
 
     def generate_report(self):
-        """Generate performance report"""
+        """Enhanced performance report with detailed R-multiple analysis"""
         total_trades = len(self.trades)
         winning_trades = len([t for t in self.trades if t['pnl'] > 0])
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-
+        
+        # R-multiple analysis
+        r_multiples = [t['r_multiple'] for t in self.trades]
+        excess_rs = [t['excess_r'] for t in self.trades]
+        trades_beyond_3r = len([t for t in self.trades if t['excess_r'] > 0])
+        
         print("\n=== BACKTEST PERFORMANCE REPORT ===")
         print(f"Initial Balance: ${self.initial_balance:,.2f}")
         print(f"Final Balance: ${self.current_balance:,.2f}")
         print(f"Total Return: {((self.current_balance/self.initial_balance - 1) * 100):.2f}%")
         print(f"Total Trades: {total_trades}")
         print(f"Win Rate: {win_rate:.2f}%")
-    
-        print("\n=== DETAILED TRADE HISTORY ===")
-        for i, trade in enumerate(self.trades, 1):
-            print(f"\nTrade #{i}")
-            print(f"Type: {trade['type'].upper()}")
-            print(f"Entry Time: {trade['entry_time']}")
-            print(f"Exit Time: {trade['exit_time']}")
+        
+        print("\n=== R-MULTIPLE ANALYSIS ===")
+        print(f"Average R-Multiple: {np.mean(r_multiples):.2f}")
+        print(f"Best R-Multiple: {max(r_multiples):.2f}")
+        print(f"Trades Beyond 3R: {trades_beyond_3r}")
+        print(f"Average Excess R: {np.mean(excess_rs):.2f}")
+        
+        print("\n=== NOTABLE TRADES ===")
+        best_trades = sorted(self.trades, key=lambda x: x['r_multiple'], reverse=True)[:5]
+        for i, trade in enumerate(best_trades, 1):
+            print(f"\nTop Trade #{i}")
             print(f"Entry Price: ${trade['entry_price']:,.2f}")
             print(f"Exit Price: ${trade['exit_price']:,.2f}")
-            print(f"Stop Loss: ${trade['stop_loss']:,.2f}")
-            print(f"Take Profit: ${trade['take_profit']:,.2f}")
-            print(f"Position Size: {trade['position_size']:.4f}")
+            print(f"R-Multiple: {trade['r_multiple']:.2f}")
             print(f"PnL: ${trade['pnl']:,.2f}")
-            print(f"Exit Type: {trade['exit_type'].upper()}")
+            print(f"Movement: {trade['movement_percentage']:.2f}%")
 
     def export_to_excel(self, filename='trading_results.xlsx'):
-        """Export trade results to Excel"""
+        """Enhanced Excel export with R-multiple analysis"""
         if not self.trades:
             print("No trades to export")
             return
         
-        # Create DataFrame from trades
         trades_data = []
         for trade in self.trades:
             trade_data = {
@@ -252,28 +271,22 @@ class BTCTradeBacktester:
                 'Entry Time': trade['entry_time'],
                 'Exit Time': trade['exit_time'],
                 'Entry Price': trade['entry_price'],
-                'Stop Loss': trade['stop_loss'],
-                'Take Profit': trade['take_profit'],
                 'Exit Price': trade['exit_price'],
                 'Position Size': trade['position_size'],
-                'Outcome': trade['exit_type'].upper(),
                 'PnL ($)': trade['pnl'],
-                'Balance After Trade': trade['exit_balance'],
-                'Risk Amount ($)': trade['entry_balance'] * self.risk_percentage,
-                'Risk-Reward Ratio': '1:3',
-                'Price Risk (Points)': abs(trade['entry_price'] - trade['stop_loss']),
-                'Potential Reward (Points)': abs(trade['take_profit'] - trade['entry_price'])
+                'R-Multiple': trade['r_multiple'],
+                'Excess Beyond 3R': trade['excess_r'],
+                'Price Movement %': trade['movement_percentage'],
+                'Risk Amount ($)': trade['risk_amount'],
+                'Exit Type': trade['exit_type'].upper()
             }
             trades_data.append(trade_data)
         
         df_trades = pd.DataFrame(trades_data)
         
-        # Create Excel writer object
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-            # Write trades to sheet
             df_trades.to_excel(writer, sheet_name='Trade History', index=True)
             
-            # Get workbook and worksheet objects
             workbook = writer.book
             worksheet = writer.sheets['Trade History']
             
@@ -327,7 +340,7 @@ class BTCTradeBacktester:
             win_rate = len([t for t in self.trades if t['pnl'] > 0]) / len(self.trades)
             worksheet.write(summary_start_row + 5, 1, win_rate, percent_format)
             
-        print(f"Results exported to {filename}")
+        print(f"\nResults exported to {filename}")
 
 # Modified usage example
 if __name__ == "__main__":
