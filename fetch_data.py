@@ -6,9 +6,9 @@ import time
 exchange = ccxt.binance()
 
 # Define parameters
-symbol = 'BTC/USDT'
+symbol = 'ETH/USDT'
 timeframes = {'1h': '1h', '5m': '5m'}
-since = exchange.parse8601('2025-01-01T00:00:00Z')
+since = exchange.parse8601('2024-08-05T00:00:00Z')
 limit = 1000  # Max limit per request
 
 def fetch_ohlcv(timeframe):
@@ -36,8 +36,8 @@ oh5 = fetch_ohlcv(timeframes['5m'])
 def save_to_csv(data, timeframe):
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.to_csv(f'BTCUSDT_{timeframe}.csv', index=False)
-    print(f'Saved BTCUSDT_{timeframe}.csv')
+    df.to_csv(f'ETHUSDT_{timeframe}.csv', index=False)
+    print(f'Saved ETHUSDT_{timeframe}.csv')
 
 save_to_csv(oh1, '1h')
 save_to_csv(oh5, '5m')

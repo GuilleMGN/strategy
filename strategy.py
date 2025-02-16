@@ -345,8 +345,8 @@ class BTCTradeBacktester:
 
 # Run commands
 if __name__ == "__main__":
-    backtest = BTCTradeBacktester(initial_balance=10000.0, risk_percentage=0.01)
-    backtest.load_data("BTCUSDT_1h.csv", "BTCUSDT_5m.csv")
+    backtest = BTCTradeBacktester(initial_balance=20000.0, risk_percentage=0.01)
+    backtest.load_data("ETHUSDT_1h.csv", "ETHUSDT_5m.csv")
     backtest.run_backtest()
     backtest.generate_report()
     backtest.export_to_excel()  # This will create trading_results.xlsx
