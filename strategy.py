@@ -271,14 +271,15 @@ class BTCTradeBacktester:
                 'Entry Time': trade['entry_time'],
                 'Exit Time': trade['exit_time'],
                 'Entry Price': trade['entry_price'],
+                'Stop Loss': trade['stop_loss'],
+                'Take Profit': trade['take_profit'],
                 'Exit Price': trade['exit_price'],
                 'Position Size': trade['position_size'],
+                'Outcome': trade['exit_type'].upper(),
                 'PnL ($)': trade['pnl'],
-                'R-Multiple': trade['r_multiple'],
-                'Excess Beyond 3R': trade['excess_r'],
-                'Price Movement %': trade['movement_percentage'],
-                'Risk Amount ($)': trade['risk_amount'],
-                'Exit Type': trade['exit_type'].upper()
+                'Balance After Trade': trade['exit_balance'],
+                'Risk Amount ($)': trade['entry_balance'] * self.risk_percentage,
+                'Risk-Reward Ratio': '1:3'
             }
             trades_data.append(trade_data)
         
@@ -316,33 +317,33 @@ class BTCTradeBacktester:
                 worksheet.write(0, col_num + 1, value, header_format)
             
             # Format columns
-            worksheet.set_column('A:A', 18)  # Index column
-            worksheet.set_column('B:B', 15)  # Position column
-            worksheet.set_column('C:D', 18)  # Time columns
+            worksheet.set_column('A:A', 18, cell_format)  # Index column
+            worksheet.set_column('B:B', 15, cell_format)  # Position column
+            worksheet.set_column('C:D', 18, cell_format)  # Time columns
             worksheet.set_column('E:H', 15, money_format)  # Price columns
-            worksheet.set_column('I:J', 15)  # Position Outcome
-            worksheet.set_column('K:K', 15, money_format)  # PnL columns
-            worksheet.set_column('L:P', 18, money_format)  # Balances
+            worksheet.set_column('I:J', 15, cell_format)  # Position Outcome
+            worksheet.set_column('K:K', 15, money_format)  # PnL column
+            worksheet.set_column('L:N', 18, money_format)  # Balances
             
             # Add summary statistics
             summary_start_row = len(df_trades) + 4
             worksheet.write(summary_start_row, 0, 'Summary Statistics', header_format)
-            worksheet.write(summary_start_row + 1, 0, 'Initial Balance:')
+            worksheet.write(summary_start_row + 1, 0, 'Initial Balance:', cell_format)
             worksheet.write(summary_start_row + 1, 1, self.initial_balance, money_format)
-            worksheet.write(summary_start_row + 2, 0, 'Final Balance:')
+            worksheet.write(summary_start_row + 2, 0, 'Final Balance:', cell_format)
             worksheet.write(summary_start_row + 2, 1, self.current_balance, money_format)
-            worksheet.write(summary_start_row + 3, 0, 'Total Return:')
+            worksheet.write(summary_start_row + 3, 0, 'Total Return:', cell_format)
             worksheet.write(summary_start_row + 3, 1, 
                           (self.current_balance/self.initial_balance - 1), percent_format)
-            worksheet.write(summary_start_row + 4, 0, 'Total Trades:')
+            worksheet.write(summary_start_row + 4, 0, 'Total Trades:', cell_format)
             worksheet.write(summary_start_row + 4, 1, len(self.trades))
-            worksheet.write(summary_start_row + 5, 0, 'Win Rate:')
+            worksheet.write(summary_start_row + 5, 0, 'Win Rate:', cell_format)
             win_rate = len([t for t in self.trades if t['pnl'] > 0]) / len(self.trades)
             worksheet.write(summary_start_row + 5, 1, win_rate, percent_format)
             
         print(f"\nResults exported to {filename}")
 
-# Modified usage example
+# Run commands
 if __name__ == "__main__":
     backtest = BTCTradeBacktester(initial_balance=10000.0, risk_percentage=0.01)
     backtest.load_data("BTCUSDT_1h.csv", "BTCUSDT_5m.csv")
