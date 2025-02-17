@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import ta
 from datetime import datetime
+from fetch_data import asset
 
 def calculate_supertrend(df, period=10, multiplier=3):
     """Calculate Supertrend indicator"""
@@ -258,7 +259,7 @@ class BTCTradeBacktester:
             print(f"PnL: ${trade['pnl']:,.2f}")
             print(f"Movement: {trade['movement_percentage']:.2f}%")
 
-    def export_to_excel(self, filename='trading_results.xlsx'):
+    def export_to_excel(self, filename=f'{asset}_backtest_results.xlsx'):
         """Enhanced Excel export with R-multiple analysis"""
         if not self.trades:
             print("No trades to export")
@@ -346,7 +347,7 @@ class BTCTradeBacktester:
 # Run commands
 if __name__ == "__main__":
     backtest = BTCTradeBacktester(initial_balance=20000.0, risk_percentage=0.01)
-    backtest.load_data("ETHUSDT_1h.csv", "ETHUSDT_5m.csv")
+    backtest.load_data(f"{asset}USDT_1h.csv", f"{asset}USDT_5m.csv")
     backtest.run_backtest()
     backtest.generate_report()
-    backtest.export_to_excel()  # This will create trading_results.xlsx
+    backtest.export_to_excel()  # This will create the backtest_results.xlsx
