@@ -120,7 +120,7 @@ class BTCTradeBacktester:
         return position_size
     
     def run_backtest(self):
-        """Run the backtest with exact risk management"""
+        """Run the backtest with trailing stop loss and exact risk management"""
         for index, row in self.df_5m.iterrows():
             if index < 200:
                 continue
@@ -131,17 +131,35 @@ class BTCTradeBacktester:
             
             # Check for open trade
             if self.current_trade:
-                # Check if stop loss or take profit hit
+                # Update trailing stop if trade is in profit
                 if self.current_trade['type'] == 'long':
+                    if row['close'] > self.current_trade['entry_price']:
+                        # Calculate potential new trailing stop
+                        potential_stop = row['close'] - (row['close'] - self.current_trade['entry_price'])
+                        # Only move stop loss up, never down
+                        if potential_stop > self.current_trade['stop_loss']:
+                            self.current_trade['stop_loss'] = potential_stop
+                            self.current_trade['trailing_active'] = True
+                    
+                    # Check if stop loss hit
                     if row['low'] <= self.current_trade['stop_loss']:
-                        self.close_trade(row, 'stop_loss')
-                    elif row['high'] >= self.current_trade['take_profit']:
-                        self.close_trade(row, 'take_profit')
+                        exit_type = 'trailing_stop' if self.current_trade.get('trailing_active', False) else 'stop_loss'
+                        self.close_trade(row, exit_type)
+                        
                 else:  # short
+                    if row['close'] < self.current_trade['entry_price']:
+                        # Calculate potential new trailing stop
+                        potential_stop = row['close'] + (self.current_trade['entry_price'] - row['close'])
+                        # Only move stop loss down, never up
+                        if potential_stop < self.current_trade['stop_loss']:
+                            self.current_trade['stop_loss'] = potential_stop
+                            self.current_trade['trailing_active'] = True
+                    
+                    # Check if stop loss hit
                     if row['high'] >= self.current_trade['stop_loss']:
-                        self.close_trade(row, 'stop_loss')
-                    elif row['low'] <= self.current_trade['take_profit']:
-                        self.close_trade(row, 'take_profit')
+                        exit_type = 'trailing_stop' if self.current_trade.get('trailing_active', False) else 'stop_loss'
+                        self.close_trade(row, exit_type)
+                        
             else:
                 # Check for new trade
                 trend = self.check_1h_trend(row['timestamp'])
@@ -151,8 +169,6 @@ class BTCTradeBacktester:
                     entry_price = row['close']
                     stop_loss = (entry_price - (2 * row['atr']) if entry_signal == 'long' 
                                else entry_price + (2 * row['atr']))
-                    take_profit = (entry_price + (6 * row['atr']) if entry_signal == 'long'
-                                 else entry_price - (6 * row['atr']))
 
                     position_size = self.calculate_position_size(entry_price, stop_loss)
 
@@ -160,17 +176,18 @@ class BTCTradeBacktester:
                         'type': entry_signal,
                         'entry_price': entry_price,
                         'stop_loss': stop_loss,
-                        'take_profit': take_profit,
                         'position_size': position_size,
                         'entry_time': row['timestamp'],
-                        'entry_balance': self.current_balance
+                        'entry_balance': self.current_balance,
+                        'trailing_active': False,
+                        'initial_stop_distance': abs(entry_price - stop_loss)
                     }
 
     def close_trade(self, row, exit_type):
         """
         Enhanced trade closing with:
         - Exact risk amount on stop losses
-        - Full profit capture on winning trades
+        - Full profit capture on trailing stop trades
         """
         # Calculate base risk amount
         risk_amount = self.current_trade['entry_balance'] * self.risk_percentage
@@ -180,23 +197,23 @@ class BTCTradeBacktester:
             pnl = -risk_amount
             # Use stop loss price for record keeping
             exit_price = self.current_trade['stop_loss']
-        else:  # take_profit or other exit types
-            # Capture full movement for winning trades
+        else:  # trailing_stop or other exit types
+            # Capture actual price movement for trailing stop trades
             if self.current_trade['type'] == 'long':
-                exit_price = row['high']
+                exit_price = self.current_trade['stop_loss']  # Use stop price for accuracy
                 price_change = exit_price - self.current_trade['entry_price']
             else:  # short
-                exit_price = row['low']
+                exit_price = self.current_trade['stop_loss']  # Use stop price for accuracy
                 price_change = self.current_trade['entry_price'] - exit_price
             
-            # Calculate actual PnL for winning trades
+            # Calculate actual PnL for trailing stop trades
             pnl = price_change * self.current_trade['position_size']
         
         # Calculate R-multiple achieved
-        r_multiple = abs(pnl / risk_amount)
+        r_multiple = pnl / risk_amount
         
-        # Calculate how far beyond 3R we went (if applicable)
-        excess_r = max(0, r_multiple - 3) if exit_type == 'take_profit' else 0
+        # Calculate how far beyond 1R we went (if applicable)
+        excess_r = max(0, r_multiple - 1) if exit_type == 'trailing_stop' else 0
         
         # Update balance
         self.current_balance += pnl
@@ -210,16 +227,11 @@ class BTCTradeBacktester:
             'pnl': pnl,
             'exit_balance': self.current_balance,
             'risk_amount': risk_amount,
-            'base_target': risk_amount * 3,  # Standard 3R target
             'r_multiple': r_multiple,
             'excess_r': excess_r,
-            'price_movement': (price_change if exit_type != 'stop_loss' 
-                             else exit_price - self.current_trade['entry_price']),
-            'movement_percentage': (
-                (price_change / self.current_trade['entry_price'] * 100) 
-                if exit_type != 'stop_loss' 
-                else -self.risk_percentage * 100
-            )
+            'price_movement': price_change,
+            'movement_percentage': (price_change / self.current_trade['entry_price'] * 100),
+            'trailing_stop_used': exit_type == 'trailing_stop'
         }
         
         self.trades.append(trade_record)
@@ -234,7 +246,7 @@ class BTCTradeBacktester:
         # R-multiple analysis
         r_multiples = [t['r_multiple'] for t in self.trades]
         excess_rs = [t['excess_r'] for t in self.trades]
-        trades_beyond_3r = len([t for t in self.trades if t['excess_r'] > 0])
+        trailing_stop_trades = len([t for t in self.trades if t.get('trailing_stop_used', False)])
         
         print("\n=== BACKTEST PERFORMANCE REPORT ===")
         print(f"Initial Balance: ${self.initial_balance:,.2f}")
@@ -246,21 +258,23 @@ class BTCTradeBacktester:
         print("\n=== R-MULTIPLE ANALYSIS ===")
         print(f"Average R-Multiple: {np.mean(r_multiples):.2f}")
         print(f"Best R-Multiple: {max(r_multiples):.2f}")
-        print(f"Trades Beyond 3R: {trades_beyond_3r}")
+        print(f"Trades Using Trailing Stop: {trailing_stop_trades}")
         print(f"Average Excess R: {np.mean(excess_rs):.2f}")
         
         print("\n=== NOTABLE TRADES ===")
         best_trades = sorted(self.trades, key=lambda x: x['r_multiple'], reverse=True)[:5]
         for i, trade in enumerate(best_trades, 1):
+            trailing_info = "Trailing Stop Used" if trade.get('trailing_stop_used', False) else "Initial Stop Loss"
             print(f"\nTop Trade #{i}")
             print(f"Entry Price: ${trade['entry_price']:,.2f}")
             print(f"Exit Price: ${trade['exit_price']:,.2f}")
+            print(f"Exit Type: {trade['exit_type']} ({trailing_info})")
             print(f"R-Multiple: {trade['r_multiple']:.2f}")
             print(f"PnL: ${trade['pnl']:,.2f}")
             print(f"Movement: {trade['movement_percentage']:.2f}%")
 
     def export_to_excel(self, filename=f'{asset}_backtest_results.xlsx'):
-        """Enhanced Excel export with R-multiple analysis"""
+        """Enhanced Excel export with trailing stop analysis"""
         if not self.trades:
             print("No trades to export")
             return
@@ -272,15 +286,17 @@ class BTCTradeBacktester:
                 'Entry Time': trade['entry_time'],
                 'Exit Time': trade['exit_time'],
                 'Entry Price': trade['entry_price'],
-                'Stop Loss': trade['stop_loss'],
-                'Take Profit': trade['take_profit'],
+                'Initial Stop Loss': trade.get('initial_stop_distance', 0) + trade['entry_price'] if trade['type'] == 'short' else trade['entry_price'] - trade.get('initial_stop_distance', 0),
+                'Final Stop Loss': trade['stop_loss'],
                 'Exit Price': trade['exit_price'],
                 'Position Size': trade['position_size'],
                 'Outcome': trade['exit_type'].upper(),
+                'Trailing Stop Used': 'Yes' if trade.get('trailing_stop_used', False) else 'No',
                 'PnL ($)': trade['pnl'],
+                'R-Multiple': trade['r_multiple'],
                 'Balance After Trade': trade['exit_balance'],
-                'Risk Amount ($)': trade['entry_balance'] * self.risk_percentage,
-                'Risk-Reward Ratio': '1:3'
+                'Risk Amount ($)': trade['risk_amount'],
+                'Risk Management': 'Trailing Stop with 1% Account Risk'
             }
             trades_data.append(trade_data)
         
@@ -323,8 +339,11 @@ class BTCTradeBacktester:
             worksheet.set_column('C:D', 18, cell_format)  # Time columns
             worksheet.set_column('E:H', 15, money_format)  # Price columns
             worksheet.set_column('I:J', 15, cell_format)  # Position Outcome
-            worksheet.set_column('K:K', 15, money_format)  # PnL column
-            worksheet.set_column('L:N', 18, money_format)  # Balances
+            worksheet.set_column('K:K', 15, cell_format)  # Trailing Stop Used
+            worksheet.set_column('L:L', 15, money_format)  # PnL column
+            worksheet.set_column('M:M', 15, cell_format)  # R-Multiple
+            worksheet.set_column('N:P', 18, money_format)  # Balances and Risk
+            worksheet.set_column('Q:Q', 30, cell_format)  # Risk Management
             
             # Add summary statistics
             summary_start_row = len(df_trades) + 4
@@ -341,6 +360,22 @@ class BTCTradeBacktester:
             worksheet.write(summary_start_row + 5, 0, 'Win Rate:', cell_format)
             win_rate = len([t for t in self.trades if t['pnl'] > 0]) / len(self.trades)
             worksheet.write(summary_start_row + 5, 1, win_rate, percent_format)
+            
+            # Add trailing stop specific statistics
+            worksheet.write(summary_start_row + 7, 0, 'Trailing Stop Statistics', header_format)
+            trailing_trades = len([t for t in self.trades if t.get('trailing_stop_used', False)])
+            worksheet.write(summary_start_row + 8, 0, 'Trades Using Trailing Stop:', cell_format)
+            worksheet.write(summary_start_row + 8, 1, trailing_trades)
+            worksheet.write(summary_start_row + 9, 0, 'Trailing Stop %:', cell_format)
+            worksheet.write(summary_start_row + 9, 1, trailing_trades/len(self.trades), percent_format)
+            
+            # Add R-multiple statistics
+            worksheet.write(summary_start_row + 11, 0, 'R-Multiple Analysis', header_format)
+            r_multiples = [t['r_multiple'] for t in self.trades]
+            worksheet.write(summary_start_row + 12, 0, 'Average R-Multiple:', cell_format)
+            worksheet.write(summary_start_row + 12, 1, np.mean(r_multiples))
+            worksheet.write(summary_start_row + 13, 0, 'Best R-Multiple:', cell_format)
+            worksheet.write(summary_start_row + 13, 1, max(r_multiples))
             
         print(f"\nResults exported to {filename}")
 
