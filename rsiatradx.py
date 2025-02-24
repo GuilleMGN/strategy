@@ -62,34 +62,40 @@ risk_amount = None
 # Trading strategy simulation on 5m timeframe
 for i in range(STOP_LOSS_CANDLES, len(data_5m)):
     if not in_position:
-        # Long entry conditions
+        current_rsi = data_5m['RSI'][i] if not pd.isna(data_5m['RSI'][i]) else 0
+
+        # Long entry conditions: Enter immediately when RSI drops below 30 in an uptrend
         if (data_5m['Trend'][i] == 'Up' and 
-            data_5m['RSI'][i] < RSI_OVERSOLD):
+            current_rsi < RSI_OVERSOLD):
             entry_price = data_5m['close'][i]
             # Set stop loss below the low of the last 3 candles, adjusted by 2x ATR
-            stop_loss = min(data_5m['low'][i - STOP_LOSS_CANDLES:i]) - 2 * data_5m['ATR'][i]
+            last_3_lows = min(data_5m['low'][i - STOP_LOSS_CANDLES:i]) if not pd.isna(data_5m['low'][i - STOP_LOSS_CANDLES:i]).any() else data_5m['low'][i]
+            atr_at_entry = data_5m['ATR'][i] if not pd.isna(data_5m['ATR'][i]) else 0
+            stop_loss = last_3_lows - (2 * atr_at_entry)
             stop_distance = entry_price - stop_loss
             if stop_distance > 0:
                 risk_amount = balance * RISK_PER_TRADE
                 position_size = risk_amount / stop_distance
                 # Take-profit at 1:3 risk-reward ratio
-                take_profit = entry_price + 3 * stop_distance
+                take_profit = entry_price + (3 * stop_distance)
                 in_position = True
                 position_type = 'Long'
                 entry_time = data_5m['timestamp'][i]
 
-        # Short entry conditions
+        # Short entry conditions: Enter immediately when RSI rises above 70 in a downtrend
         elif (data_5m['Trend'][i] == 'Down' and 
-              data_5m['RSI'][i] > RSI_OVERBOUGHT):
+              current_rsi > RSI_OVERBOUGHT):
             entry_price = data_5m['close'][i]
             # Set stop loss above the high of the last 3 candles, adjusted by 2x ATR
-            stop_loss = max(data_5m['high'][i - STOP_LOSS_CANDLES:i]) + 2 * data_5m['ATR'][i]
+            last_3_highs = max(data_5m['high'][i - STOP_LOSS_CANDLES:i]) if not pd.isna(data_5m['high'][i - STOP_LOSS_CANDLES:i]).any() else data_5m['high'][i]
+            atr_at_entry = data_5m['ATR'][i] if not pd.isna(data_5m['ATR'][i]) else 0
+            stop_loss = last_3_highs + (2 * atr_at_entry)
             stop_distance = stop_loss - entry_price
             if stop_distance > 0:
                 risk_amount = balance * RISK_PER_TRADE
                 position_size = risk_amount / stop_distance
                 # Take-profit at 1:3 risk-reward ratio
-                take_profit = entry_price - 3 * stop_distance
+                take_profit = entry_price - (3 * stop_distance)
                 in_position = True
                 position_type = 'Short'
                 entry_time = data_5m['timestamp'][i]
