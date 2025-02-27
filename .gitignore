@@ -1,3 +1,6 @@
+__pycache__/
+Backup/
+Results/
+Data/
 *.csv
 *.xlsx
-\__pycache__

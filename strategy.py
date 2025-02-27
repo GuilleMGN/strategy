@@ -4,19 +4,23 @@ import numpy as np
 import pandas_ta as pta  # For SuperTrend calculation
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+import os
 
 # Configuration parameters
 INITIAL_BALANCE = 10000.00
 RISK_PER_TRADE = 0.01  # 1% risk per trade
 SUPER_TREND_PERIOD = 10
 SUPER_TREND_MULTIPLIER = 3
-SMA_200_PERIOD = 200
+SMA_PERIOD = 200
 ATR_PERIOD = 14
 STOP_LOSS_CANDLES = 3  # Number of candles to look back for stop loss
 
 # Load data
-data_1h = pd.read_csv('BTCUSDT_1h.csv', parse_dates=['timestamp'])
-data_5m = pd.read_csv('BTCUSDT_5m.csv', parse_dates=['timestamp'])
+asset = 'XRP'
+print(f'{asset} backtest in progress...')
+data_dir = 'Data'
+data_1h = pd.read_csv(os.path.join(data_dir, f'{asset}_data_1h.csv'), parse_dates=['timestamp'])
+data_5m = pd.read_csv(os.path.join(data_dir, f'{asset}_data_5m.csv'), parse_dates=['timestamp'])
 
 # Calculate indicators on 1h timeframe
 # SuperTrend
@@ -27,15 +31,15 @@ data_1h['SuperTrend'] = supertrend_1h[supertrend_col]  # SuperTrend line value
 data_1h['SuperTrend_Direction'] = supertrend_1h[supertrend_direction_col]  # SuperTrend direction
 
 # SMA
-data_1h['SMA_200'] = ta.SMA(data_1h['close'], timeperiod=SMA_200_PERIOD)
+data_1h['SMA'] = ta.SMA(data_1h['close'], timeperiod=SMA_PERIOD)
 
-# Determine trend on 1h timeframe (using SuperTrend and SMA_200 only)
+# Determine trend on 1h timeframe (using SuperTrend and SMA only)
 data_1h['Trend'] = np.where(
     (data_1h['SuperTrend_Direction'] == 1) & 
-    (data_1h['close'] > data_1h['SMA_200']), 'Up',
+    (data_1h['close'] > data_1h['SMA']), 'Up',
     np.where(
         (data_1h['SuperTrend_Direction'] == -1) & 
-        (data_1h['close'] < data_1h['SMA_200']), 'Down', 'None'))
+        (data_1h['close'] < data_1h['SMA']), 'Down', 'None'))
 
 # Calculate indicators on 5m timeframe
 data_5m['EMA5'] = ta.EMA(data_5m['close'], timeperiod=5)
@@ -151,7 +155,6 @@ for i in range(STOP_LOSS_CANDLES, len(data_5m)):
                 'PnL': pnl,
                 'Balance After Trade': balance,
                 'Exit Reason': exit_reason,
-                'RSI at Entry': 0,  # Removed RSI, so set to 0 (or remove if not needed)
                 'ATR at Entry': data_5m['ATR'][i] if not pd.isna(data_5m['ATR'][i]) else 0
             })
             in_position = False
@@ -182,8 +185,14 @@ summary = {
 }
 summary_df = pd.DataFrame([summary])
 
-# Write to Excel with formatting
-with pd.ExcelWriter('backtest_results.xlsx', engine='openpyxl') as writer:
+# Create Results directory if it doesn't exist
+results_dir = 'Results'
+if not os.path.exists(results_dir):
+    os.makedirs(results_dir)
+
+# Write to Excel with formatting - update the file path
+excel_file_path = os.path.join(results_dir, f'{asset}_results.xlsx')
+with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
     trades_df.to_excel(writer, sheet_name='Trades', index=False)
     summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
@@ -208,9 +217,9 @@ with pd.ExcelWriter('backtest_results.xlsx', engine='openpyxl') as writer:
 
     # Format Trades sheet
     currency_format = '$#,##0.00'
-    btc_format = '0.00000000'
+    coin_format = '0.00000000'
     datetime_format = 'yyyy-mm-dd hh:mm:ss'
-    number_format = '0.00'  # For RSI and ATR values
+    number_format = '0.00' 
 
     for row in ws_trades.iter_rows(min_row=2, max_row=ws_trades.max_row):
         for cell in row:
@@ -223,10 +232,10 @@ with pd.ExcelWriter('backtest_results.xlsx', engine='openpyxl') as writer:
                 cell.number_format = currency_format
             # Position Size
             elif col_idx == 8:
-                cell.number_format = btc_format
-            # Exit Reason, RSI at Entry, ATR at Entry
-            elif col_idx in [12, 13, 14]:
-                cell.number_format = number_format if col_idx in [13, 14] else '@'  # Text format for Exit Reason
+                cell.number_format = coin_format
+            # Exit Reason, ATR at Entry
+            elif col_idx in [12, 13]:
+                cell.number_format = number_format if col_idx in [13] else '@'  # Text format for Exit Reason
 
     # Format Summary sheet
     percentage_format = '0.00%'  # For win rate as percentage
@@ -240,3 +249,6 @@ with pd.ExcelWriter('backtest_results.xlsx', engine='openpyxl') as writer:
             # Win Rate
             elif col_idx == 5:
                 cell.number_format = percentage_format  # Percentage format (e.g., 0.00%)
+
+print(f'{asset} backtest complete. ')
+print(f'Saved to {excel_file_path} ')

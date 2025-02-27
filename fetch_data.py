@@ -1,15 +1,15 @@
 import ccxt
 import pandas as pd
 import time
+import os
 
-# Initialize Binance API
+# Initialize API
 exchange = ccxt.binance()
 
 # Define parameters
-asset = 'BTC'
+asset = 'XRP'
 symbol = asset + '/USDT'
 timeframes = {
-            #   '4h': '4h',
               '1h': '1h', 
               '5m': '5m'
               }
@@ -34,17 +34,24 @@ def fetch_ohlcv(timeframe):
     return ohlcv
 
 # Fetch data
-# oh4 = fetch_ohlcv(timeframes['4h'])
 oh1 = fetch_ohlcv(timeframes['1h'])
 oh5 = fetch_ohlcv(timeframes['5m'])
 
 # Convert to DataFrame and save to CSV
 def save_to_csv(data, timeframe):
+    # Create Data directory if it doesn't exist
+    data_dir = 'Data'
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+    
+    # Create DataFrame
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.to_csv(f'{asset}USDT_{timeframe}.csv', index=False)
-    print(f'Saved {asset}USDT_{timeframe}.csv')
+    
+    # Save to CSV in the Data folder
+    data_file_path = os.path.join(data_dir, f'{asset}_data_{timeframe}.csv')
+    df.to_csv(data_file_path, index=False)
+    print(f'Saved {data_file_path}')
 
-# save_to_csv(oh4, '4h')
 save_to_csv(oh1, '1h')
 save_to_csv(oh5, '5m')
