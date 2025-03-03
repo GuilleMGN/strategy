@@ -19,7 +19,7 @@ exchange = ccxt.bingx({
     'apiKey': api_key,
     'secret': secret_key
 })
-symbol = 'BTC/USDT:USDT'
+symbol = 'ETH/USDT:USDT' 
 
 # Configuration
 INITIAL_BALANCE = 10000.00  # VST
@@ -34,6 +34,7 @@ LEVERAGE = 3
 balance = INITIAL_BALANCE
 ohlcv_5m = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'EMA5', 'EMA8', 'EMA13', 'ATR'])
 ohlcv_1h = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+previous_5m_trend = 'None'  # Initialize previous 5m trend
 
 def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3):
     retry_count = 0
@@ -100,7 +101,7 @@ def calculate_indicators(df, timeframe, other_df=None):
     min_length = SUPER_TREND_PERIOD + 1 if timeframe == '1h' else max(5, 8, 13) + 1
     if df.empty or len(df) < min_length:
         print(f"Insufficient data for {timeframe} indicators.")
-        return ('None', 'Unknown', np.nan, np.nan, np.nan) if timeframe == '1h' else pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0})
+        return ('None', 'Unknown', np.nan, np.nan, np.nan) if timeframe == '1h' else (pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0}), 'Unknown')
 
     if timeframe == '1h':
         try:
@@ -146,13 +147,12 @@ def calculate_indicators(df, timeframe, other_df=None):
                 five_m_trend = 'Down'
             else:
                 five_m_trend = 'None'
-            one_h_trend = ohlcv_1h['Trend'].iloc[-1] if not ohlcv_1h.empty and 'Trend' in ohlcv_1h.columns else 'Unknown'
-            return df[['EMA5', 'EMA8', 'EMA13', 'ATR', 'close', 'high', 'low']].iloc[-1]
+            return df[['EMA5', 'EMA8', 'EMA13', 'ATR', 'close', 'high', 'low']].iloc[-1], five_m_trend
         except Exception as e:
             print(f"Error calculating 5m indicators: {e}")
-            return pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0})
+            return pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0}), 'Unknown'
 
-def execute_trade(trend, ema_data, balance, last_3_candles):
+def execute_trade(trend, ema_data, balance, last_3_candles, previous_5m_trend):
     if trend == 'None' or pd.isna(ema_data['close']) or ema_data['close'] == 0:
         print("No trades found in this 5m candle...")
         return None, None, None, None, None
@@ -161,7 +161,8 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
     high_3 = max(last_3_candles['high']) if not last_3_candles.empty else current_close
     low_3 = min(last_3_candles['low']) if not last_3_candles.empty else current_close
 
-    if trend == 'Up' and current_close > ema5 > ema8 > ema13:
+    # Check 5m trend conditions with previous trend
+    if trend == 'Up' and current_close > ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
         entry_price = current_close
         stop_loss = low_3 - (2 * atr)
         stop_distance = entry_price - stop_loss
@@ -171,7 +172,7 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
             take_profit = entry_price + (3 * stop_distance)
             print(f"\nTrade Opened: \nEnter Long: {entry_price:.4f} \nStop Loss: {stop_loss:.4f} \nTake Profit: {take_profit:.4f} \nPosition Size: {position_size:.4f}")
             return 'Long', entry_price, stop_loss, take_profit, position_size
-    elif trend == 'Down' and ema13 > ema8 > ema5 > current_close:
+    elif trend == 'Down' and ema13 > ema8 > ema5 > current_close and previous_5m_trend in ['Up', 'None']:
         entry_price = current_close
         stop_loss = high_3 + (2 * atr)
         stop_distance = stop_loss - entry_price
@@ -181,8 +182,9 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
             take_profit = entry_price - (3 * stop_distance)
             print(f"\nTrade Opened: \nEnter Short: {entry_price:.4f} \nStop Loss: {stop_loss:.4f} \nTake Profit: {take_profit:.4f} \nPosition Size: {position_size:.4f}")
             return 'Short', entry_price, stop_loss, take_profit, position_size
-    print("No trades found in this 5m candle...")
-    return None, None, None, None, None
+    else:
+        print("No trades found in this 5m candle due to trend conditions...")
+        return None, None, None, None, None
 
 def print_summary(balance, initial_balance):
     profit_loss = balance - initial_balance
@@ -194,7 +196,7 @@ def print_summary(balance, initial_balance):
     print("\nLive Trading Finished.")
 
 def main():
-    global balance, ohlcv_5m, ohlcv_1h
+    global balance, ohlcv_5m, ohlcv_1h, previous_5m_trend
     in_position = False
 
     try:
@@ -212,21 +214,21 @@ def main():
 
             # Fetch latest 5m data
             ohlcv_5m = fetch_ohlcv('5m', limit=60)
-            ema_data = calculate_indicators(ohlcv_5m, '5m', ohlcv_1h)
+            ema_data, current_5m_trend = calculate_indicators(ohlcv_5m, '5m', ohlcv_1h)
 
             # Update 1h data if new hour has passed
             current_hour = current_est.replace(minute=0, second=0, microsecond=0)
             if ohlcv_1h.empty or current_hour > ohlcv_1h.index[-1]:
                 ohlcv_1h = fetch_ohlcv('1h', limit=700)
 
-            current_trend, five_m_trend, sma, supertrend, price = calculate_indicators(ohlcv_1h, '1h', ohlcv_5m)
+            current_trend, _, sma, supertrend, price = calculate_indicators(ohlcv_1h, '1h', ohlcv_5m)
             print(f"200 SMA: {sma:.4f}, SuperTrend: {supertrend:.4f}, Price: {price:.4f}")
-            print(f"1h trend: {current_trend}, 5m trend: {five_m_trend}")
+            print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}")
 
             last_3_candles = ohlcv_5m.tail(1)[['high', 'low']] if len(ohlcv_5m) >= 1 else pd.DataFrame()
 
             if not in_position:
-                position, entry_price, stop_loss, take_profit, position_size = execute_trade(current_trend, ema_data, balance, last_3_candles)
+                position, entry_price, stop_loss, take_profit, position_size = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
                     in_position = True
 
@@ -256,6 +258,9 @@ def main():
                             print(f"\nTrade Closed: \nExit Short: {take_profit:.4f} \nPnL: {pnl:.2f} VST")
                             in_position = False
                     time.sleep(1)
+
+            # Update previous 5m trend after each candle check
+            previous_5m_trend = current_5m_trend
 
     except KeyboardInterrupt:
         print_summary(balance, INITIAL_BALANCE)
