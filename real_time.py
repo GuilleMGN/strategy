@@ -19,7 +19,7 @@ exchange = ccxt.bingx({
     'apiKey': api_key,
     'secret': secret_key
 })
-symbol = 'ETH/USDT:USDT'
+symbol = 'BTC/USDT:USDT'
 
 # Configuration
 INITIAL_BALANCE = 10000.00  # VST
@@ -85,13 +85,13 @@ def wait_for_candle_close(current_time_est, timeframe='5m'):
         wait_seconds = (next_5m - current_time_est).total_seconds()
         if wait_seconds < 0:
             wait_seconds += 300  # Add 5 minutes if negative
-        print(f"Waiting {wait_seconds:.1f} seconds for 5m candle to close at {next_5m.strftime('%Y-%m-%d %H:%M:%S')} EST")
+        print(f"Waiting {wait_seconds:.1f} seconds for 5m candle at {next_5m.strftime('%Y-%m-%d %H:%M:%S')} EST...")
         time.sleep(wait_seconds)
         return next_5m
     else:
         next_hour = current_time_est.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
         wait_seconds = (next_hour - current_time_est).total_seconds()
-        print(f"Waiting {wait_seconds:.1f} seconds for 1h candle to close at {next_hour.strftime('%Y-%m-%d %H:%M:%S')} EST")
+        print(f"Waiting {wait_seconds:.1f} seconds for 1h candle at {next_hour.strftime('%Y-%m-%d %H:%M:%S')} EST..")
         time.sleep(wait_seconds)
         return next_hour
 
@@ -99,7 +99,7 @@ def calculate_indicators(df, timeframe, other_df=None):
     global ohlcv_5m, ohlcv_1h
     min_length = SUPER_TREND_PERIOD + 1 if timeframe == '1h' else max(5, 8, 13) + 1
     if df.empty or len(df) < min_length:
-        print(f"Insufficient data for {timeframe} indicators")
+        print(f"Insufficient data for {timeframe} indicators.")
         return ('None', 'Unknown', np.nan, np.nan, np.nan) if timeframe == '1h' else pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0})
 
     if timeframe == '1h':
@@ -169,7 +169,7 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
             risk_amount = balance * RISK_PER_TRADE
             position_size = risk_amount / stop_distance
             take_profit = entry_price + (3 * stop_distance)
-            print(f"\nNew Trade Opened: Entered Long at {entry_price:.4f}, SL: {stop_loss:.4f}, TP: {take_profit:.4f}, Size: {position_size:.4f}")
+            print(f"\nTrade Opened: \nEnter Long: {entry_price:.4f} \nStop Loss: {stop_loss:.4f} \nTake Profit: {take_profit:.4f} \nPosition Size: {position_size:.4f}")
             return 'Long', entry_price, stop_loss, take_profit, position_size
     elif trend == 'Down' and ema13 > ema8 > ema5 > current_close:
         entry_price = current_close
@@ -179,7 +179,7 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
             risk_amount = balance * RISK_PER_TRADE
             position_size = risk_amount / stop_distance
             take_profit = entry_price - (3 * stop_distance)
-            print(f"\nNew Trade Opened: Entered Short at {entry_price:.4f}, SL: {stop_loss:.4f}, TP: {take_profit:.4f}, Size: {position_size:.4f}")
+            print(f"\nTrade Opened: \nEnter Short: {entry_price:.4f} \nStop Loss: {stop_loss:.4f} \nTake Profit: {take_profit:.4f} \nPosition Size: {position_size:.4f}")
             return 'Short', entry_price, stop_loss, take_profit, position_size
     print("No trades found in this 5m candle...")
     return None, None, None, None, None
@@ -187,15 +187,11 @@ def execute_trade(trend, ema_data, balance, last_3_candles):
 def print_summary(balance, initial_balance):
     profit_loss = balance - initial_balance
     profit_percentage = (profit_loss / initial_balance) * 100
-    print("\n" + "="*50)
-    print("TRADING SESSION SUMMARY".center(50))
-    print("="*50)
+    print("\nTrading Session Summary:")
     print(f"Initial Balance: {initial_balance:.2f} VST")
     print(f"Final Balance: {balance:.2f} VST")
     print(f"Profit/Loss: {profit_loss:.2f} VST ({profit_percentage:.2f}%)")
-    print("="*50)
-    print("Live Trading has been paused.")
-    print("="*50)
+    print("\nLive Trading Finished.")
 
 def main():
     global balance, ohlcv_5m, ohlcv_1h
@@ -206,7 +202,7 @@ def main():
         ohlcv_1h = initialize_historical_1h_data()
         print("Fetching initial 5m data...")
         ohlcv_5m = initialize_5m_data()
-        print(f"\n{symbol} is now trading LIVE on BingX Perpetual Futures...")
+        print(f"\n{symbol} is now trading LIVE on BingX Perpetual Futures.")
 
         while True:
             est_timezone = timezone('America/New_York')
@@ -241,23 +237,23 @@ def main():
                         if current_price <= stop_loss:
                             pnl = (stop_loss - entry_price) * position_size
                             balance += pnl
-                            print(f"Trade Closed: Exited Long at {stop_loss:.4f}, PnL: {pnl:.2f} VST")
+                            print(f"\nTrade Closed: \nExit Long: {stop_loss:.4f} \nPnL: {pnl:.2f} VST")
                             in_position = False
                         elif current_price >= take_profit:
                             pnl = (take_profit - entry_price) * position_size
                             balance += pnl
-                            print(f"Trade Closed: Exited Long at {take_profit:.4f}, PnL: {pnl:.2f} VST")
+                            print(f"\nTrade Closed: \nExit Long: {take_profit:.4f} \nPnL: {pnl:.2f} VST")
                             in_position = False
                     elif position == 'Short':
                         if current_price >= stop_loss:
                             pnl = (entry_price - stop_loss) * position_size
                             balance += pnl
-                            print(f"Trade Closed: Exited Short at {stop_loss:.4f}, PnL: {pnl:.2f} VST")
+                            print(f"\nTrade Closed: \nExit Short: {stop_loss:.4f} \nPnL: {pnl:.2f} VST")
                             in_position = False
                         elif current_price <= take_profit:
                             pnl = (entry_price - take_profit) * position_size
                             balance += pnl
-                            print(f"Trade Closed: Exited Short at {take_profit:.4f}, PnL: {pnl:.2f} VST")
+                            print(f"\nTrade Closed: \nExit Short: {take_profit:.4f} \nPnL: {pnl:.2f} VST")
                             in_position = False
                     time.sleep(1)
 
