@@ -19,7 +19,7 @@ exchange = ccxt.bingx({
     'apiKey': api_key,
     'secret': secret_key
 })
-symbol = 'ETH/USDT:USDT' 
+symbol = 'SUI/USDT:USDT' 
 
 # Configuration
 INITIAL_BALANCE = 10000.00  # VST

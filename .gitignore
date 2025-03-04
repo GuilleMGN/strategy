@@ -4,4 +4,5 @@ Results/
 Data/
 *.csv
 *.xlsx
+*.log
 .env
