@@ -19,7 +19,7 @@ exchange = ccxt.bingx({
     'apiKey': api_key,
     'secret': secret_key
 })
-symbol = 'ADA/USDT:USDT'
+symbol = 'ADA/USDT:USDT'  # Change to 'SOL/USDT:USDT' or desired symbol as needed
 
 # Configuration constants
 RISK_PER_TRADE = 0.01  # 1% risk per trade
@@ -28,6 +28,17 @@ SUPER_TREND_MULTIPLIER = 3
 SMA_PERIOD = 200
 ATR_PERIOD = 14
 STOP_LOSS_CANDLES = 3
+
+# Minimum amount precision for symbols
+MIN_AMOUNT_PRECISION = {
+    'SOL/USDT:USDT': 1.0,    # Minimum 1 SOL
+    'BTC/USDT:USDT': 0.0001,
+    'ETH/USDT:USDT': 0.001,
+    'XRP/USDT:USDT': 0.1,
+    'ADA/USDT:USDT': 0.1,
+    'SUI/USDT:USDT': 0.001,
+    'LTC/USDT:USDT': 0.01
+}
 
 # Global variables
 balance = None
@@ -73,8 +84,7 @@ def check_open_positions():
     try:
         positions = exchange.fetch_positions([symbol], params={'type': 'future'})
         for position in positions:
-            if position['info'].get('positionAmt', 0) != 0:
-                print(f"Open position detected for {symbol}: Amount = {position['info']['positionAmt']}")
+            if float(position['info'].get('positionAmt', 0)) != 0:
                 return True
         return False
     except Exception as e:
@@ -92,16 +102,29 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
 
     position_size = risk_amount / stop_loss_distance
     notional_value = position_size * entry_price
-    required_leverage = max(1, (notional_value / current_balance) + 1)
-    leverage = min(125, round(required_leverage))
-    adjusted_margin = notional_value / leverage
-
-    if adjusted_margin > current_balance:
-        print(f"Insufficient margin for {symbol}: Required {adjusted_margin:.2f} USDT, Available {current_balance:.2f} USDT")
+    
+    # Check minimum amount precision
+    min_amount = MIN_AMOUNT_PRECISION.get(symbol, 0.001)
+    if position_size < min_amount:
+        print(f"Position size {position_size:.4f} below minimum {min_amount} for {symbol}. Skipping trade.")
         return None, None, None
 
+    # Start with 1x leverage, add +1 buffer
+    required_leverage = notional_value / current_balance
+    base_leverage = max(1, round(required_leverage))
+    leverage = min(125, base_leverage + 1)
+    margin = notional_value / leverage
+
+    if margin > current_balance:
+        base_leverage = round(notional_value / current_balance)
+        leverage = min(125, base_leverage + 1)
+        margin = notional_value / leverage
+        if margin > current_balance:
+            print(f"Insufficient margin for {symbol}: Required {margin:.2f} USDT, Available {current_balance:.2f} USDT")
+            return None, None, None
+
     position_size = round(position_size, 1)  # Adjust precision as needed
-    return position_size, leverage, adjusted_margin
+    return position_size, leverage, margin
 
 def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3):
     retry_count = 0
@@ -138,31 +161,22 @@ def initialize_5m_data():
     print(f"Fetched {len(df_5m)} 5m candles for {symbol}")
     return df_5m
 
-def wait_for_candle_close(current_time_est, timeframe='5m'):
+def wait_for_candle_close(current_time_est):
     est_timezone = timezone('America/New_York')
     if not isinstance(current_time_est, pd.Timestamp):
         current_time_est = pd.Timestamp(current_time_est, tz=est_timezone)
     elif current_time_est.tz is None:
         current_time_est = current_time_est.tz_localize(est_timezone)
     
-    if timeframe == '5m':
-        minutes = current_time_est.minute
-        seconds = current_time_est.second + current_time_est.microsecond / 1e6
-        next_5m = current_time_est.replace(minute=((minutes // 5 + 1) * 5) % 60, second=0, microsecond=0)
-        if next_5m.minute == 0 and minutes >= 55:
-            next_5m += pd.Timedelta(hours=1)
-        wait_seconds = (next_5m - current_time_est).total_seconds()
-        if wait_seconds < 0:
-            wait_seconds += 300
-        print(f"Waiting {wait_seconds:.1f} seconds for 5m candle at {next_5m.strftime('%Y-%m-%d %H:%M:%S')} EST...")
-        time.sleep(wait_seconds)
-        return next_5m
-    else:
-        next_hour = current_time_est.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
-        wait_seconds = (next_hour - current_time_est).total_seconds()
-        print(f"Waiting {wait_seconds:.1f} seconds for 1h candle at {next_hour.strftime('%Y-%m-%d %H:%M:%S')} EST...")
-        time.sleep(wait_seconds)
-        return next_hour
+    minutes = current_time_est.minute
+    seconds = current_time_est.second + current_time_est.microsecond / 1e6
+    next_5m = current_time_est.replace(minute=((minutes // 5 + 1) * 5) % 60, second=0, microsecond=0)
+    if next_5m.minute == 0 and minutes >= 55:
+        next_5m += pd.Timedelta(hours=1)
+    wait_seconds = (next_5m - current_time_est).total_seconds()
+    if wait_seconds < 0:
+        wait_seconds += 300
+    return wait_seconds, next_5m
 
 def calculate_indicators(df, timeframe, other_df=None):
     global ohlcv_5m, ohlcv_1h
@@ -209,7 +223,7 @@ def calculate_indicators(df, timeframe, other_df=None):
 
 def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_trend):
     if trend == 'None' or pd.isna(ema_data['close']) or ema_data['close'] == 0:
-        print("No trades found in this 5m candle...")
+        print("No trades found in this 5m candle due to trend conditions...")
         return None, None, None, None, None, None
 
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
@@ -243,7 +257,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nPosition Size: {position_size:.1f}\nLeverage: {leverage}x\ntime: {order['timestamp']}")
+            print(f"\nTrade Opened:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nPosition Size: {position_size:.1f}\nLeverage: {leverage}x\nMargin: {margin:.2f} USDT")
             return 'Long', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
             print(f"Error placing long order: {e}")
@@ -271,7 +285,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nPosition Size: {position_size:.1f}\nLeverage: {leverage}x\ntime: {order['timestamp']}")
+            print(f"\nTrade Opened:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nPosition Size: {position_size:.1f}\nLeverage: {leverage}x\nMargin: {margin:.2f} USDT")
             return 'Short', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
             print(f"Error placing short order: {e}")
@@ -280,12 +294,13 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         print("No trades found in this 5m candle due to trend conditions...")
         return None, None, None, None, None, None
 
-def print_summary(final_balance, initial_balance):
-    if initial_balance <= 0:
+def print_summary(initial_balance):
+    final_balance = get_account_balance()
+    if initial_balance <= 0 or final_balance <= 0:
         print("\nTrading Session Summary:")
-        print(f"Initial Balance: Unknown (API error)")
-        print(f"Final Balance: {final_balance:.2f} USDT")
-        print("Profit/Loss: Cannot calculate due to initial balance error")
+        print(f"Initial Balance: {initial_balance if initial_balance > 0 else 'Unknown (API error)'} USDT")
+        print(f"Final Balance: {final_balance if final_balance > 0 else 'Unknown (API error)'} USDT")
+        print("Profit/Loss: Cannot calculate due to balance error")
         print("\nLive Trading Finished.")
         return
     
@@ -322,10 +337,12 @@ def main():
         print(f"Account Balance: {balance:.4f} USDT")
 
         while True:
-            est_timezone = timezone('America/New_York')
-            current_est = pd.Timestamp.now(tz=est_timezone)
-            next_5m_close = wait_for_candle_close(current_est, '5m')
-            print(f"\nChecking status at {next_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST")
+            current_est = pd.Timestamp.now(tz=timezone('America/New_York'))
+            wait_seconds, next_5m_close = wait_for_candle_close(current_est)
+            current_5m_close = next_5m_close  # Check the candle that just closed
+
+            print(f"\nWaiting {wait_seconds:.1f} seconds for 5m candle at {next_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
+            time.sleep(wait_seconds)
 
             balance = get_account_balance()
             if balance <= 0:
@@ -335,30 +352,52 @@ def main():
             ohlcv_5m = fetch_ohlcv('5m', limit=60)
             ema_data, current_5m_trend = calculate_indicators(ohlcv_5m, '5m')
 
-            current_hour = current_est.replace(minute=0, second=0, microsecond=0)
-            if ohlcv_1h.empty or current_hour > ohlcv_1h.index[-1]:
+            if ohlcv_1h.empty or current_est > ohlcv_1h.index[-1]:
                 ohlcv_1h = fetch_ohlcv('1h', limit=700)
 
-            current_trend, _, sma, supertrend, price = calculate_indicators(ohlcv_1h, '1h')
+            current_trend, _, sma, supertrend, _ = calculate_indicators(ohlcv_1h, '1h')
+            price = ema_data['close']  # Use 5m candle close for console display
+            print(f"\nChecking status at {current_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST")
             print(f"200 SMA: {sma:.4f}, SuperTrend: {supertrend:.4f}, Price: {price:.4f}")
             print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}")
 
             last_3_candles = ohlcv_5m.tail(STOP_LOSS_CANDLES)[['high', 'low']] if len(ohlcv_5m) >= STOP_LOSS_CANDLES else pd.DataFrame()
 
-            if not in_position and not check_open_positions():
+            if in_position:
+                current_price = exchange.fetch_ticker(symbol)['last']
+                if position == 'Long':
+                    if current_price <= stop_loss:
+                        pnl = (stop_loss - entry_price) * position_size
+                        print(f"\nTrade Closed:\nExit Long: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                        in_position = False
+                    elif current_price >= take_profit:
+                        pnl = (take_profit - entry_price) * position_size
+                        print(f"\nTrade Closed:\nExit Long: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                        in_position = False
+                elif position == 'Short':
+                    if current_price >= stop_loss:
+                        pnl = (entry_price - stop_loss) * position_size
+                        print(f"\nTrade Closed:\nExit Short: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                        in_position = False
+                    elif current_price <= take_profit:
+                        pnl = (entry_price - take_profit) * position_size
+                        print(f"\nTrade Closed:\nExit Short: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                        in_position = False
+                if not in_position:
+                    balance = get_account_balance()
+                    print(f"Account Balance: {balance:.4f} USDT")
+            elif not check_open_positions():
                 position, entry_price, stop_loss, take_profit, position_size, margin = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
                     in_position = True
-                    balance -= margin
-                    print(f"Trade opened: {position}, Entry Price: {entry_price:.4f}, Balance after trade: {balance:.2f} USDT, Margin Used: {margin:.2f} USDT")
 
             previous_5m_trend = current_5m_trend
 
     except KeyboardInterrupt:
-        print_summary(balance, initial_balance)
+        print_summary(initial_balance)
     except Exception as e:
         print(f"\nError encountered: {e}")
-        print_summary(balance, initial_balance)
+        print_summary(initial_balance)
 
 if __name__ == "__main__":
     main()
