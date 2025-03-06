@@ -19,7 +19,8 @@ exchange = ccxt.bingx({
     'apiKey': api_key,
     'secret': secret_key
 })
-symbol = 'ADA/USDT:USDT'  # Change to 'SOL/USDT:USDT' or desired symbol as needed
+symbol = 'BTC/USDT'
+bingx_symbol = symbol + ':USDT'
 
 # Configuration constants
 RISK_PER_TRADE = 0.01  # 1% risk per trade
@@ -31,13 +32,13 @@ STOP_LOSS_CANDLES = 3
 
 # Minimum amount precision for symbols
 MIN_AMOUNT_PRECISION = {
-    'SOL/USDT:USDT': 1.0,    # Minimum 1 SOL
     'BTC/USDT:USDT': 0.0001,
-    'ETH/USDT:USDT': 0.001,
-    'XRP/USDT:USDT': 0.1,
-    'ADA/USDT:USDT': 0.1,
-    'SUI/USDT:USDT': 0.001,
-    'LTC/USDT:USDT': 0.01
+    'ETH/USDT:USDT': 0.01,
+    'SOL/USDT:USDT': 1.0,
+    'XRP/USDT:USDT': 1.0,
+    'ADA/USDT:USDT': 1.0,
+    'SUI/USDT:USDT': 2.0,
+    'LTC/USDT:USDT': 0.1
 }
 
 # Global variables
@@ -82,7 +83,7 @@ def get_account_balance():
 def check_open_positions():
     """Check if there are any open positions for the symbol."""
     try:
-        positions = exchange.fetch_positions([symbol], params={'type': 'future'})
+        positions = exchange.fetch_positions([bingx_symbol], params={'type': 'future'})
         for position in positions:
             if float(position['info'].get('positionAmt', 0)) != 0:
                 return True
@@ -104,12 +105,12 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
     notional_value = position_size * entry_price
     
     # Check minimum amount precision
-    min_amount = MIN_AMOUNT_PRECISION.get(symbol, 0.001)
+    min_amount = MIN_AMOUNT_PRECISION.get(bingx_symbol, 0.001)
     if position_size < min_amount:
         print(f"Position size {position_size:.4f} below minimum {min_amount} for {symbol}. Skipping trade.")
         return None, None, None
 
-    # Start with 1x leverage, add +1 buffer
+    # Start with 1x leverage, add +1 buffer to cover fees
     required_leverage = notional_value / current_balance
     base_leverage = max(1, round(required_leverage))
     leverage = min(125, base_leverage + 1)
@@ -130,7 +131,7 @@ def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3):
     retry_count = 0
     while retry_count < max_retries:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit, params={'type': 'future'})
+            ohlcv = exchange.fetch_ohlcv(bingx_symbol, timeframe, since=since, limit=limit, params={'type': 'future'})
             if not ohlcv:
                 print(f"No data fetched for {timeframe} with limit {limit}")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -223,29 +224,30 @@ def calculate_indicators(df, timeframe, other_df=None):
 
 def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_trend):
     if trend == 'None' or pd.isna(ema_data['close']) or ema_data['close'] == 0:
-        print("No trades found in this 5m candle due to trend conditions...")
+        print("No trades found in this 5m candle")
         return None, None, None, None, None, None
 
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
     high_3 = max(last_3_candles['high']) if not last_3_candles.empty else current_close
     low_3 = min(last_3_candles['low']) if not last_3_candles.empty else current_close
 
-    position_size, leverage, margin = calculate_trade_parameters(current_close, low_3 if trend == 'Up' else high_3, current_balance)
+    # Calculate actual stop loss price before determining position size
+    stop_loss = low_3 - (2 * atr) if trend == 'Up' else high_3 + (2 * atr)
+    position_size, leverage, margin = calculate_trade_parameters(current_close, stop_loss, current_balance)
     if position_size is None or leverage is None or margin is None:
         return None, None, None, None, None, None
 
     if trend == 'Up' and current_close > ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
         entry_price = current_close
-        stop_loss = low_3 - (2 * atr)
         stop_distance = entry_price - stop_loss
         if stop_distance <= 0:
             print(f"Invalid stop-loss distance for {symbol}: {stop_distance}")
             return None, None, None, None, None, None
         take_profit = entry_price + (3 * stop_distance)
         try:
-            exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated", 'side': 'BOTH'})
+            exchange.set_leverage(leverage, bingx_symbol, params={"marginMode": "isolated", 'side': 'BOTH'})
             order = exchange.create_order(
-                symbol,
+                bingx_symbol,
                 'market',
                 'buy',
                 position_size,
@@ -264,16 +266,15 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             return None, None, None, None, None, None
     elif trend == 'Down' and ema13 > ema8 > ema5 > current_close and previous_5m_trend in ['Up', 'None']:
         entry_price = current_close
-        stop_loss = high_3 + (2 * atr)
         stop_distance = stop_loss - entry_price
         if stop_distance <= 0:
             print(f"Invalid stop-loss distance for {symbol}: {stop_distance}")
             return None, None, None, None, None, None
         take_profit = entry_price - (3 * stop_distance)
         try:
-            exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated", 'side': 'BOTH'})
+            exchange.set_leverage(leverage, bingx_symbol, params={"marginMode": "isolated", 'side': 'BOTH'})
             order = exchange.create_order(
-                symbol,
+                bingx_symbol,
                 'market',
                 'sell',
                 position_size,
@@ -291,7 +292,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             print(f"Error placing short order: {e}")
             return None, None, None, None, None, None
     else:
-        print("No trades found in this 5m candle due to trend conditions...")
+        print("No trades found due to trend conditions.")
         return None, None, None, None, None, None
 
 def print_summary(initial_balance):
@@ -327,26 +328,25 @@ def main():
         if balance <= 0:
             raise ValueError("No available balance; check API connection or account.")
         initial_balance = balance
-        print(f"Starting live trading for {symbol} with initial balance {balance:.2f} USDT")
-
+        print(f"\nInitializing data for {symbol}...")
         print("Fetching initial 1h data...")
         ohlcv_1h = initialize_historical_1h_data()
         print("Fetching initial 5m data...")
         ohlcv_5m = initialize_5m_data()
-        print(f"\n{symbol} is now trading LIVE on BingX Perpetual Futures.")
-        print(f"Account Balance: {balance:.4f} USDT")
+        print(f"\n{symbol} is trading live on BingX Perpetual Futures")
+        print(f"BingX Perpetual Futures Balance: ${balance:.4f} USDT")
 
         while True:
             current_est = pd.Timestamp.now(tz=timezone('America/New_York'))
             wait_seconds, next_5m_close = wait_for_candle_close(current_est)
             current_5m_close = next_5m_close  # Check the candle that just closed
 
-            print(f"\nWaiting {wait_seconds:.1f} seconds for 5m candle at {next_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
+            print(f"Waiting {wait_seconds:.1f}s until {next_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
             time.sleep(wait_seconds)
 
             balance = get_account_balance()
             if balance <= 0:
-                print(f"No available balance; stopping trading.")
+                print(f"No available balance; trading stopped.")
                 break
 
             ohlcv_5m = fetch_ohlcv('5m', limit=60)
@@ -357,14 +357,13 @@ def main():
 
             current_trend, _, sma, supertrend, _ = calculate_indicators(ohlcv_1h, '1h')
             price = ema_data['close']  # Use 5m candle close for console display
-            print(f"\nChecking status at {current_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST")
-            print(f"200 SMA: {sma:.4f}, SuperTrend: {supertrend:.4f}, Price: {price:.4f}")
-            print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}")
+            print(f"\nChecking for trades at {current_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
+            print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}, Price: {price:.4f} USDT")
 
             last_3_candles = ohlcv_5m.tail(STOP_LOSS_CANDLES)[['high', 'low']] if len(ohlcv_5m) >= STOP_LOSS_CANDLES else pd.DataFrame()
 
             if in_position:
-                current_price = exchange.fetch_ticker(symbol)['last']
+                current_price = exchange.fetch_ticker(bingx_symbol)['last']
                 if position == 'Long':
                     if current_price <= stop_loss:
                         pnl = (stop_loss - entry_price) * position_size
@@ -390,7 +389,6 @@ def main():
                 position, entry_price, stop_loss, take_profit, position_size, margin = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
                     in_position = True
-
             previous_5m_trend = current_5m_trend
 
     except KeyboardInterrupt:
