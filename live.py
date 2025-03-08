@@ -33,7 +33,7 @@ def get_crypto_symbol():
         valid_symbols = {coin['symbol'].upper(): coin['id'] for coin in coins}
         
         while True:
-            symbol = input("Enter a cryptocurrency symbol (e.g., BTC, ETH): ").strip().upper()
+            symbol = input("\nEnter a cryptocurrency symbol: ").strip().upper()
             if symbol in valid_symbols:
                 return symbol
             else:
@@ -282,7 +282,7 @@ def calculate_indicators(df, timeframe, other_df=None):
 
 def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_trend):
     if trend == 'None' or pd.isna(ema_data['close']) or ema_data['close'] == 0:
-        print(f"No trades found in this 5m candle for {symbol}")
+        print(f"No trades found due to trend conditions for {symbol}")
         return None, None, None, None, None, None
 
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
@@ -320,7 +320,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened for {symbol}:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nNotional Value: {notional_value:.2f} USDT")
+            print(f"\nTrade Opened for {symbol}:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
             return 'Long', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
             print(f"Error placing long order for {symbol}: {e}")
@@ -355,13 +355,13 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened for {symbol}:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}\nNotional Value: {notional_value:.2f} USDT")
+            print(f"\nTrade Opened for {symbol}:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
             return 'Short', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
             print(f"Error placing short order for {symbol}: {e}")
             return None, None, None, None, None, None
     else:
-        print(f"No trades found due to trend conditions for {symbol}.")
+        print(f"No trades found in this 5m candle for {symbol}")
         return None, None, None, None, None, None
 
 def print_summary(initial_balance):
