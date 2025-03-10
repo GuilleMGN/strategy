@@ -41,7 +41,7 @@ def get_crypto_asset():
         }
 
         while True:
-            asset_input = input("\nEnter a cryptocurrency asset: ").strip().upper()
+            asset_input = input("\nEnter a cryptocurrency asset (e.g., BTC): ").strip().upper()
             if asset_input in valid_assets:
                 return asset_input, valid_assets[asset_input]
             else:
@@ -70,48 +70,38 @@ ohlcv_5m = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'v
 ohlcv_1h = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 previous_5m_trend = 'None'
 
-def get_account_balance(max_retries=3):
-    """Fetch the current available margin balance from BingX Perpetual Futures with retry mechanism."""
-    retry_count = 0
-    while retry_count < max_retries:
-        try:
-            account_info = exchange.fetch_balance(params={'type': 'future'})
-            if 'USDT' in account_info and 'free' in account_info['USDT']:
-                available_margin = float(account_info['USDT']['free'])
+def get_account_balance():
+    """Fetch the current available margin balance from BingX Perpetual Futures."""
+    try:
+        account_info = exchange.fetch_balance(params={'type': 'future'})
+        if 'USDT' in account_info and 'free' in account_info['USDT']:
+            available_margin = float(account_info['USDT']['free'])
+            if available_margin > 0.01:
+                return available_margin
+        if 'info' in account_info:
+            if 'freeMargin' in account_info['info']:
+                available_margin = float(account_info['info']['freeMargin'])
                 if available_margin > 0.01:
-                    print(f"Available margin (free): {available_margin:.2f} USDT")
                     return available_margin
-            if 'info' in account_info:
-                if 'freeMargin' in account_info['info']:
-                    available_margin = float(account_info['info']['freeMargin'])
+            if 'availableBalance' in account_info['info']:
+                available_margin = float(account_info['info']['availableBalance'])
+                if available_margin > 0.01:
+                    return available_margin
+            if 'totalMargin' in account_info['info'] and 'usedMargin' in account_info['info']:
+                available_margin = float(account_info['info']['totalMargin']) - float(account_info['info']['usedMargin'])
+                if available_margin > 0.01:
+                    return available_margin
+        if 'info' in account_info and 'data' in account_info['info'] and 'balances' in account_info['info']['data']:
+            for balance in account_info['info']['data']['balances']:
+                if balance['asset'] == 'USDT':
+                    available_margin = float(balance['free'])
                     if available_margin > 0.01:
-                        print(f"Available margin (freeMargin): {available_margin:.2f} USDT")
                         return available_margin
-                if 'availableBalance' in account_info['info']:
-                    available_margin = float(account_info['info']['availableBalance'])
-                    if available_margin > 0.01:
-                        print(f"Available margin (availableBalance): {available_margin:.2f} USDT")
-                        return available_margin
-                if 'totalMargin' in account_info['info'] and 'usedMargin' in account_info['info']:
-                    available_margin = float(account_info['info']['totalMargin']) - float(account_info['info']['usedMargin'])
-                    if available_margin > 0.01:
-                        print(f"Available margin (total - used): {available_margin:.2f} USDT")
-                        return available_margin
-                if 'data' in account_info['info'] and 'balances' in account_info['info']['data']:
-                    for balance in account_info['info']['data']['balances']:
-                        if balance['asset'] == 'USDT':
-                            available_margin = float(balance['free'])
-                            if available_margin > 0.01:
-                                print(f"Available margin (balances free): {available_margin:.2f} USDT")
-                                return available_margin
-            print(f"Could not find valid available margin field for {asset}")
-            return 0.0
-        except Exception as e:
-            print(f"Error fetching account balance for {asset}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
-            retry_count += 1
-            time.sleep(1)
-    print(f"Max retries reached for fetching balance for {asset}.")
-    return 0.0
+        print(f"Could not find valid available margin field for {asset}")
+        return 0.0
+    except Exception as e:
+        print(f"Error fetching account balance for {asset}: {e}")
+        return 0.0
 
 def check_open_positions():
     """Check if there are any open positions for the asset."""
@@ -157,16 +147,13 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
     margin = notional_value / leverage
 
     if margin > current_balance:
-        print(f"Warning: Required margin ({margin:.2f} USDT) exceeds available balance ({current_balance:.2f} USDT).")
-        # Reduce position size to fit within available balance
-        adjusted_position_size = (current_balance * leverage) / entry_price
-        adjusted_position_size = max(min_amount, round(adjusted_position_size, quantity_precision))
-        notional_value = adjusted_position_size * entry_price
+        base_leverage = round(notional_value / current_balance)
+        leverage = min(125, base_leverage + 1)
         margin = notional_value / leverage
-        position_size = adjusted_position_size
-        print(f"Adjusted position size to {position_size:.4f} to fit margin.")
+        if margin > current_balance:
+            print(f"Insufficient margin for {asset}: Required {margin:.2f} USDT, Available {current_balance:.2f} USDT")
+            return None, None, None
 
-    print(f"Calculated: Position Size: {position_size:.4f}, Leverage: {leverage}x, Margin: {margin:.2f} USDT")
     return position_size, leverage, margin
 
 def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3, is_initializing=True):
@@ -217,6 +204,7 @@ def wait_for_candle_close(current_time_est):
         current_time_est = current_time_est.tz_localize(est_timezone)
     
     minutes = current_time_est.minute
+    seconds = current_time_est.second + current_time_est.microsecond / 1e6
     next_5m = current_time_est.replace(minute=((minutes // 5 + 1) * 5) % 60, second=0, microsecond=0)
     if next_5m.minute == 0 and minutes >= 55:
         next_5m += pd.Timedelta(hours=1)
@@ -283,26 +271,16 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         print(f"No trades found due to trend conditions for {asset}")
         return None, None, None, None, None, None
 
-    # Use EMA data for trend confirmation, but fetch the current price for entry
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
     high_3 = max(last_3_candles['high']) if not last_3_candles.empty else current_close
     low_3 = min(last_3_candles['low']) if not last_3_candles.empty else current_close
 
-    # Fetch the current market price as the entry price
-    try:
-        entry_price = exchange.fetch_ticker(symbol)['last']
-    except Exception as e:
-        print(f"Error fetching current price for {asset}: {e}. Falling back to candle close.")
-        entry_price = current_close
-
-    # Debug print to check EMA values and previous trend
-    print(f"Debug - EMA5: {ema5:.4f}, EMA8: {ema8:.4f}, EMA13: {ema13:.4f}, Current Close: {current_close:.4f}, Previous 5m Trend: {previous_5m_trend}")
-
     if trend == 'Up' and current_close > ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
         stop_loss = low_3 - (2 * atr)
-        position_size, leverage, margin = calculate_trade_parameters(entry_price, stop_loss, current_balance)
+        position_size, leverage, margin = calculate_trade_parameters(current_close, stop_loss, current_balance)
         if position_size is None or leverage is None or margin is None:
             return None, None, None, None, None, None
+        entry_price = current_close
         stop_distance = entry_price - stop_loss
         if stop_distance <= 0:
             print(f"Invalid stop-loss distance for {asset}: {stop_distance}")
@@ -311,9 +289,10 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         side = 'buy'
     elif trend == 'Down' and ema13 > ema8 > ema5 > current_close and previous_5m_trend in ['Up', 'None']:
         stop_loss = high_3 + (2 * atr)
-        position_size, leverage, margin = calculate_trade_parameters(entry_price, stop_loss, current_balance)
+        position_size, leverage, margin = calculate_trade_parameters(current_close, stop_loss, current_balance)
         if position_size is None or leverage is None or margin is None:
             return None, None, None, None, None, None
+        entry_price = current_close
         stop_distance = stop_loss - entry_price
         if stop_distance <= 0:
             print(f"Invalid stop-loss distance for {asset}: {stop_distance}")
@@ -392,12 +371,6 @@ def main():
         print(f"\n{asset} is trading live on BingX Perpetual Futures")
         print(f"BingX Perpetual Futures Balance: {balance:.2f} USDT")
 
-        # Calculate initial trends and price for display
-        ema_data_5m, initial_5m_trend = calculate_indicators(ohlcv_5m, '5m')
-        initial_1h_trend, _, _, _, _ = calculate_indicators(ohlcv_1h, '1h')
-        initial_price = ema_data_5m['close']
-        print(f"1h trend: {initial_1h_trend}, 5m trend: {initial_5m_trend}, Price: {initial_price:.4f} USDT")
-
         while True:
             current_est = pd.Timestamp.now(tz=timezone('America/New_York'))
             wait_seconds, next_5m_close = wait_for_candle_close(current_est)
@@ -421,7 +394,6 @@ def main():
                 latest_candle_time = None
 
             ema_data, current_5m_trend = calculate_indicators(ohlcv_5m, '5m')
-            previous_5m_trend = current_5m_trend  # Update before trade check
 
             if ohlcv_1h.empty or current_est > ohlcv_1h.index[-1]:
                 ohlcv_1h = fetch_ohlcv('1h', limit=700, is_initializing=False)
@@ -462,8 +434,7 @@ def main():
                 position, entry_price, stop_loss, take_profit, position_size, margin = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
                     in_position = True
-
-            previous_5m_trend = current_5m_trend  # Keep this for consistency
+            previous_5m_trend = current_5m_trend
 
     except KeyboardInterrupt:
         print_summary(initial_balance)
