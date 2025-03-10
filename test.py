@@ -289,8 +289,16 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
     high_3 = max(last_3_candles['high']) if not last_3_candles.empty else current_close
     low_3 = min(last_3_candles['low']) if not last_3_candles.empty else current_close
 
-    # Check trend conditions first
-    if trend == 'Up' and current_close > ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
+    # Debug prints to monitor values
+    print(f"Debug - Current Close: {current_close:.6f}, EMA5: {ema5:.6f}, EMA8: {ema8:.6f}, EMA13: {ema13:.6f}")
+    print(f"Debug - Previous 5m Trend: {previous_5m_trend}")
+    print(f"Debug - EMA5 > EMA8: {ema5 > ema8}")
+    print(f"Debug - EMA8 > EMA13: {ema8 > ema13}")
+    print(f"Debug - EMA13 > EMA8: {ema13 > ema8}")
+    print(f"Debug - Previous 5m Trend Condition: {previous_5m_trend in ['Down', 'None']}")
+
+    # Check trend conditions without current_close requirement
+    if trend == 'Up' and ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
         stop_loss = low_3 - (2 * atr)
         position_size, leverage, margin = calculate_trade_parameters(current_close, stop_loss, current_balance)
         if position_size is None or leverage is None or margin is None:
@@ -325,7 +333,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         except Exception as e:
             print(f"Error placing long order for {symbol}: {e}")
             return None, None, None, None, None, None
-    elif trend == 'Down' and ema13 > ema8 > ema5 > current_close and previous_5m_trend in ['Up', 'None']:
+    elif trend == 'Down' and ema13 > ema8 > ema5 and previous_5m_trend in ['Up', 'None']:
         stop_loss = high_3 + (2 * atr)
         position_size, leverage, margin = calculate_trade_parameters(current_close, stop_loss, current_balance)
         if position_size is None or leverage is None or margin is None:
@@ -430,26 +438,17 @@ def main():
                 break
             
             ohlcv_5m = fetch_ohlcv('5m', limit=60, is_initializing=False)
-            if not ohlcv_5m.empty:
-                latest_candle_time = ohlcv_5m.index[-1]
-                print(f"Latest 5m candle timestamp: {latest_candle_time.strftime('%Y-%m-%d %H:%M:%S')} EST")
-
             ema_data, current_5m_trend = calculate_indicators(ohlcv_5m, '5m')
             current_trend, _, sma, supertrend, _ = calculate_indicators(ohlcv_1h, '1h')
             price = ema_data['close']
-            print(f"\nChecking for trades at {current_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
-            print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}, Price: {price:.4f} USDT")
 
-            ohlcv_5m = fetch_ohlcv('5m', limit=60, is_initializing=False)
-            ema_data, current_5m_trend = calculate_indicators(ohlcv_5m, '5m')
-
-            if ohlcv_1h.empty or current_est > ohlcv_1h.index[-1]:
-                ohlcv_1h = fetch_ohlcv('1h', limit=700, is_initializing=False)
-            
             if not in_position:  # Only print checking message when no trade is open
                 print(f"\nChecking for trades at {current_5m_close.strftime('%Y-%m-%d %H:%M:%S')} EST...")
                 print(f"1h trend: {current_trend}, 5m trend: {current_5m_trend}, Price: {price:.4f} USDT")
 
+            if ohlcv_1h.empty or current_est > ohlcv_1h.index[-1]:
+                ohlcv_1h = fetch_ohlcv('1h', limit=700, is_initializing=False)
+            
             last_3_candles = ohlcv_5m.tail(STOP_LOSS_CANDLES)[['high', 'low']] if len(ohlcv_5m) >= STOP_LOSS_CANDLES else pd.DataFrame()
 
             if in_position:
