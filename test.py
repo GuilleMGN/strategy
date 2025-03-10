@@ -405,6 +405,12 @@ def main():
         print(f"\n{symbol} is trading live on BingX Perpetual Futures")
         print(f"BingX Perpetual Futures Balance: {balance:.2f} USDT")
 
+        # Calculate initial trends and price for display
+        ema_data_5m, initial_5m_trend = calculate_indicators(ohlcv_5m, '5m')
+        initial_1h_trend, _, _, _, _ = calculate_indicators(ohlcv_1h, '1h')
+        initial_price = ema_data_5m['close']
+        print(f"1h trend: {initial_1h_trend}, 5m trend: {initial_5m_trend}, Price: {initial_price:.4f} USDT")
+
         while True:
             current_est = pd.Timestamp.now(tz=timezone('America/New_York'))
             wait_seconds, next_5m_close = wait_for_candle_close(current_est)
