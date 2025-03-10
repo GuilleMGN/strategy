@@ -38,6 +38,8 @@ def get_crypto_symbol():
                 return symbol
             else:
                 print("Error: Invalid cryptocurrency symbol. Please try again.")
+    except KeyboardInterrupt:
+        print("Live Trading cancelled.")
     except requests.exceptions.RequestException as e:
         print(f"Error fetching cryptocurrency data: {e}")
         sys.exit(1)
@@ -151,7 +153,6 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
 
     # Round position size to the correct precision
     position_size = round(position_size, quantity_precision)
-
     notional_value = position_size * entry_price  # For display purposes only
 
     # Start with 1x leverage, add +1 buffer to cover fees
@@ -288,14 +289,6 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
     high_3 = max(last_3_candles['high']) if not last_3_candles.empty else current_close
     low_3 = min(last_3_candles['low']) if not last_3_candles.empty else current_close
-
-    # Debug prints to monitor values
-    print(f"Debug - Current Close: {current_close:.6f}, EMA5: {ema5:.6f}, EMA8: {ema8:.6f}, EMA13: {ema13:.6f}")
-    print(f"Debug - Previous 5m Trend: {previous_5m_trend}")
-    print(f"Debug - EMA5 > EMA8: {ema5 > ema8}")
-    print(f"Debug - EMA8 > EMA13: {ema8 > ema13}")
-    print(f"Debug - EMA13 > EMA8: {ema13 > ema8}")
-    print(f"Debug - Previous 5m Trend Condition: {previous_5m_trend in ['Down', 'None']}")
 
     # Check trend conditions without current_close requirement
     if trend == 'Up' and ema5 > ema8 > ema13 and previous_5m_trend in ['Down', 'None']:
@@ -453,27 +446,41 @@ def main():
 
             if in_position:
                 current_price = exchange.fetch_ticker(futures)['last']
-                if position == 'Long':
-                    if current_price <= stop_loss:
-                        pnl = (stop_loss - entry_price) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Long: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                # First, check if the broker has already closed the position
+                if not check_open_positions():
+                # Trade was closed externally; assume current_price is the exit price
+                    if position == 'Long':
+                        pnl = (current_price - entry_price) * position_size
+                        print(f"\nTrade Closed for {symbol}:\nExit Long: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
+                    elif position == 'Short':
+                        pnl = (entry_price - current_price) * position_size
+                        print(f"\nTrade Closed for {symbol}:\nExit Short: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
                         in_position = False
-                    elif current_price >= take_profit:
-                        pnl = (take_profit - entry_price) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Long: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
-                        in_position = False
-                elif position == 'Short':
-                    if current_price >= stop_loss:
-                        pnl = (entry_price - stop_loss) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Short: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
-                        in_position = False
-                    elif current_price <= take_profit:
-                        pnl = (entry_price - take_profit) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Short: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
-                        in_position = False
-                if not in_position:
-                    balance = get_account_balance()
-                    print(f"Account Balance for {symbol}: {balance:.4f} USDT")
+                        balance = get_account_balance()
+                        print(f"Account Balance for {symbol}: {balance:.4f} USDT")
+                    else:
+                        # Existing price condition checks if the position is still reported as open
+                        if position == 'Long':
+                            if current_price <= stop_loss:
+                                pnl = (stop_loss - entry_price) * position_size
+                                print(f"\nTrade Closed for {symbol}:\nExit Long: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                                in_position = False
+                            elif current_price >= take_profit:
+                                pnl = (take_profit - entry_price) * position_size
+                                print(f"\nTrade Closed for {symbol}:\nExit Long: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                                in_position = False
+                        elif position == 'Short':
+                            if current_price >= stop_loss:
+                                pnl = (entry_price - stop_loss) * position_size
+                                print(f"\nTrade Closed for {symbol}:\nExit Short: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                                in_position = False
+                            elif current_price <= take_profit:
+                                pnl = (entry_price - take_profit) * position_size
+                                print(f"\nTrade Closed for {symbol}:\nExit Short: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                                in_position = False
+                            if not in_position:
+                                balance = get_account_balance()
+                                print(f"Account Balance for {symbol}: {balance:.4f} USDT")
             elif not check_open_positions():
                 position, entry_price, stop_loss, take_profit, position_size, margin = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
