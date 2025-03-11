@@ -23,23 +23,29 @@ exchange = ccxt.bingx({
     'options': {'defaultType': 'swap'}  # Set default to Perpetual Futures (swap)
 })
 
-def get_crypto_symbol():
-    """Prompt user for a cryptocurrency symbol and validate using CoinGecko API."""
-    url = "https://api.coingecko.com/api/v3/coins/list"
+def get_crypto_asset():
+    """Prompt user for a cryptocurrency asset and validate using BingX API."""
+    url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
     try:
         response = requests.get(url)
         response.raise_for_status()
-        coins = response.json()
-        valid_symbols = {coin['symbol'].upper(): coin['id'] for coin in coins}
+        contracts = response.json().get('data', [])
+        
+        # Create a mapping of asset symbols to their BingX trading pairs
+        valid_assets = {contract['asset'].upper(): contract['symbol'] for contract in contracts}
         
         while True:
-            symbol = input("\nEnter a cryptocurrency symbol: ").strip().upper()
-            if symbol in valid_symbols:
-                return symbol
-            else:
-                print("Error: Invalid cryptocurrency symbol. Please try again.")
-    except KeyboardInterrupt:
-        print("Live Trading cancelled.")
+            try:
+                symbol = input("\nEnter a cryptocurrency symbol: ").strip().upper()
+                if symbol in valid_assets:
+                    asset = symbol
+                    symbol = valid_assets[symbol]
+                    return asset, symbol
+                else:
+                    print("Error: Invalid cryptocurrency symbol. Please try again.")
+            except KeyboardInterrupt:
+                print("\nLive Trading cancelled.")
+                sys.exit(1)
     except requests.exceptions.RequestException as e:
         print(f"Error fetching cryptocurrency data: {e}")
         sys.exit(1)
@@ -72,12 +78,12 @@ SMA_PERIOD = 200
 ATR_PERIOD = 14
 STOP_LOSS_CANDLES = 3
 
-# Global variables
-symbol = get_crypto_symbol().strip().upper()
-futures = f"{symbol}-USDT"  # Corrected format for BingX perpetual futures (e.g., BTC-USDT)
+# Use the function to get the asset and symbol
+global asset, symbol
+asset, symbol = get_crypto_asset()
 
 # Fetch contract details at startup
-contract_details = fetch_contract_details(futures)
+contract_details = fetch_contract_details(symbol)
 trade_min_usdt = contract_details['tradeMinUSDT']
 quantity_precision = contract_details['quantityPrecision']
 
@@ -113,22 +119,22 @@ def get_account_balance():
                     available_margin = float(balance['free'])
                     if available_margin > 0.01:
                         return available_margin
-        print(f"Could not find valid available margin field for {symbol}")
+        print(f"Could not find valid available margin field for {asset}")
         return 0.0
     except Exception as e:
-        print(f"Error fetching account balance for {symbol}: {e}")
+        print(f"Error fetching account balance for {asset}: {e}")
         return 0.0
 
 def check_open_positions():
     """Check if there are any open positions for the symbol."""
     try:
-        positions = exchange.fetch_positions([futures], params={'type': 'future'})
+        positions = exchange.fetch_positions([symbol], params={'type': 'future'})
         for position in positions:
             if float(position['info'].get('positionAmt', 0)) != 0:
                 return True
         return False
     except Exception as e:
-        print(f"Error checking open positions for {symbol}: {e}")
+        print(f"Error checking open positions for {asset}: {e}")
         return False
 
 def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
@@ -137,7 +143,7 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
     stop_loss_distance = abs(entry_price - stop_loss_price)
     
     if stop_loss_distance <= 0:
-        print(f"Invalid stop-loss distance for {symbol}: {stop_loss_distance}")
+        print(f"Invalid stop-loss distance for {asset}: {stop_loss_distance}")
         return None, None, None
 
     position_size = risk_amount / stop_loss_distance
@@ -148,7 +154,7 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
 
     # Check if position size meets the minimum amount
     if position_size < min_amount:
-        print(f"Position size {position_size:.4f} below minimum {min_amount:.4f} for {symbol}. Skipping trade.")
+        print(f"Position size {position_size:.4f} below minimum {min_amount:.4f} for {asset}. Skipping trade.")
         return None, None, None
 
     # Round position size to the correct precision
@@ -166,7 +172,7 @@ def calculate_trade_parameters(entry_price, stop_loss_price, current_balance):
         leverage = min(125, base_leverage + 1)
         margin = notional_value / leverage
         if margin > current_balance:
-            print(f"Insufficient margin for {symbol}: Required {margin:.2f} USDT, Available {current_balance:.2f} USDT")
+            print(f"Insufficient margin for {asset}: Required {margin:.2f} USDT, Available {current_balance:.2f} USDT")
             return None, None, None
 
     return position_size, leverage, margin
@@ -176,9 +182,9 @@ def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3, is_initializin
     retry_count = 0
     while retry_count < max_retries:
         try:
-            ohlcv = exchange.fetch_ohlcv(futures, timeframe, since=since, limit=limit, params={'type': 'future'})
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit, params={'type': 'future'})
             if not ohlcv:
-                print(f"No data fetched for {timeframe} with limit {limit} for {symbol}")
+                print(f"No data fetched for {timeframe} with limit {limit} for {asset}")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('America/New_York')
@@ -186,21 +192,21 @@ def fetch_ohlcv(timeframe, limit=1000, since=None, max_retries=3, is_initializin
             df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
             df = df.ffill().dropna()
             if is_initializing:
-                print(f"Fetched {len(df)} {timeframe} candles for {symbol}")
+                print(f"Fetched {len(df)} {timeframe} candles for {asset}")
             return df
         except ccxt.NetworkError as e:
-            print(f"Network error fetching {timeframe} data for {symbol}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
+            print(f"Network error fetching {timeframe} data for {asset}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
             retry_count += 1
             time.sleep(1)
         except ccxt.ExchangeError as e:
-            print(f"Exchange error fetching {timeframe} data for {symbol}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
+            print(f"Exchange error fetching {timeframe} data for {asset}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
             retry_count += 1
             time.sleep(1)
         except Exception as e:
-            print(f"Unexpected error fetching {timeframe} data for {symbol}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
+            print(f"Unexpected error fetching {timeframe} data for {asset}: {e}. Retrying ({retry_count + 1}/{max_retries})...")
             retry_count += 1
             time.sleep(1)
-    print(f"Max retries reached for {timeframe} data for {symbol}.")
+    print(f"Max retries reached for {timeframe} data for {asset}.")
     return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
 def initialize_1h_data():
@@ -242,7 +248,7 @@ def calculate_indicators(df, timeframe, other_df=None):
     global ohlcv_5m, ohlcv_1h
     min_length = SUPER_TREND_PERIOD + 1 if timeframe == '1h' else max(5, 8, 13) + 1
     if df.empty or len(df) < min_length:
-        print(f"Insufficient data for {timeframe} indicators for {symbol}.")
+        print(f"Insufficient data for {timeframe} indicators for {asset}.")
         return ('None', 'Unknown', np.nan, np.nan, np.nan) if timeframe == '1h' else (pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0}), 'Unknown')
 
     if timeframe == '1h':
@@ -256,7 +262,7 @@ def calculate_indicators(df, timeframe, other_df=None):
             ohlcv_1h = df.copy()
             return df['Trend'].iloc[-1], 'Unknown', df['SMA'].iloc[-1], df['SuperTrend'].iloc[-1], df['close'].iloc[-1]
         except Exception as e:
-            print(f"Error calculating 1h indicators for {symbol}: {e}")
+            print(f"Error calculating 1h indicators for {asset}: {e}")
             return 'None', 'Unknown', np.nan, np.nan, np.nan
     else:  # 5m
         try:
@@ -278,12 +284,12 @@ def calculate_indicators(df, timeframe, other_df=None):
                 five_m_trend = 'None'
             return df[['EMA5', 'EMA8', 'EMA13', 'ATR', 'close', 'high', 'low']].iloc[-1], five_m_trend
         except Exception as e:
-            print(f"Error calculating 5m indicators for {symbol}: {e}")
+            print(f"Error calculating 5m indicators for {asset}: {e}")
             return pd.Series({'EMA5': 0, 'EMA8': 0, 'EMA13': 0, 'ATR': 0, 'close': 0, 'high': 0, 'low': 0}), 'Unknown'
 
 def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_trend):
     if trend == 'None' or pd.isna(ema_data['close']) or ema_data['close'] == 0:
-        print(f"No trades found due to trend conditions for {symbol}")
+        print(f"No trades found due to trend conditions for {asset}")
         return None, None, None, None, None, None
 
     current_close, ema5, ema8, ema13, atr = (ema_data['close'], ema_data['EMA5'], ema_data['EMA8'], ema_data['EMA13'], ema_data['ATR'])
@@ -299,15 +305,15 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         entry_price = current_close
         stop_distance = entry_price - stop_loss
         if stop_distance <= 0:
-            print(f"Invalid stop-loss distance for {symbol}: {stop_distance}")
+            print(f"Invalid stop-loss distance for {asset}: {stop_distance}")
             return None, None, None, None, None, None
         take_profit = entry_price + (3 * stop_distance)
         notional_value = position_size * entry_price  # For display purposes only
         try:
-            print(f"Placing long order with balance: {current_balance:.2f} USDT, position_size: {position_size:.4f}, leverage: {leverage}")
-            exchange.set_leverage(leverage, futures, params={"marginMode": "isolated", 'type': 'future', 'side': 'BOTH'})
+            print(f"Trade found: Placing long order with {position_size:.4f} ADA")
+            exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated", 'type': 'future', 'side': 'BOTH'})
             order = exchange.create_order(
-                futures,
+                symbol,
                 'market',
                 'buy',
                 position_size,
@@ -321,10 +327,10 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened for {symbol}:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
+            print(f"\nTrade Opened for {asset}:\nEnter Long: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
             return 'Long', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
-            print(f"Error placing long order for {symbol}: {e}")
+            print(f"Error placing long order for {asset}: {e}")
             return None, None, None, None, None, None
     elif trend == 'Down' and ema13 > ema8 > ema5 and previous_5m_trend in ['Up', 'None']:
         stop_loss = high_3 + (2 * atr)
@@ -334,15 +340,15 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         entry_price = current_close
         stop_distance = stop_loss - entry_price
         if stop_distance <= 0:
-            print(f"Invalid stop-loss distance for {symbol}: {stop_distance}")
+            print(f"Invalid stop-loss distance for {asset}: {stop_distance}")
             return None, None, None, None, None, None
         take_profit = entry_price - (3 * stop_distance)
         notional_value = position_size * entry_price  # For display purposes only
         try:
-            print(f"Placing short order with balance: {current_balance:.2f} USDT, position_size: {position_size:.4f}, leverage: {leverage}")
-            exchange.set_leverage(leverage, futures, params={"marginMode": 'isolated', 'type': 'future', 'side': 'BOTH'})
+            print(f"Trade found: Placing short order with {position_size:.4f} ADA")
+            exchange.set_leverage(leverage, symbol, params={"marginMode": 'isolated', 'type': 'future', 'side': 'BOTH'})
             order = exchange.create_order(
-                futures,
+                symbol,
                 'market',
                 'sell',
                 position_size,
@@ -356,19 +362,19 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
             )
             if not order or 'id' not in order:
                 raise Exception("Failed to open position")
-            print(f"\nTrade Opened for {symbol}:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
+            print(f"\nTrade Opened for {asset}:\nEnter Short: {entry_price:.4f}\nTake Profit: {take_profit:.4f}\nStop Loss: {stop_loss:.4f}")
             return 'Short', entry_price, stop_loss, take_profit, position_size, margin
         except Exception as e:
-            print(f"Error placing short order for {symbol}: {e}")
+            print(f"Error placing short order for {asset}: {e}")
             return None, None, None, None, None, None
     else:
-        print(f"No trades found in this 5m candle for {symbol}")
+        print(f"No trades found in this 5m candle for {asset}")
         return None, None, None, None, None, None
 
 def print_summary(initial_balance):
     final_balance = get_account_balance()
     if initial_balance <= 0 or final_balance <= 0:
-        print(f"\n\nTrading Session Summary for {symbol}:")
+        print(f"\n\nTrading Session Summary for {asset}:")
         print(f"Initial Balance: {initial_balance if initial_balance > 0 else 'Unknown (API error)'} USDT")
         print(f"Final Balance: {final_balance if final_balance > 0 else 'Unknown (API error)'} USDT")
         print("Profit/Loss: Cannot calculate due to balance error")
@@ -377,7 +383,7 @@ def print_summary(initial_balance):
     
     profit_loss = final_balance - initial_balance
     profit_percentage = (profit_loss / initial_balance) * 100 if initial_balance > 0 else 0.0
-    print(f"\n\nTrading Session Summary for {symbol}:")
+    print(f"\n\nTrading Session Summary for {asset}:")
     print(f"Initial Balance: {initial_balance:.2f} USDT")
     print(f"Final Balance: {final_balance:.2f} USDT")
     print(f"Profit/Loss: {profit_loss:.2f} USDT ({profit_percentage:.2f}%)")
@@ -396,14 +402,14 @@ def main():
     try:
         balance = get_account_balance()
         if balance <= 0:
-            raise ValueError(f"No available balance for {symbol}; check API connection or account.")
+            raise ValueError(f"No available balance for {asset}; check API connection or account.")
         initial_balance = balance
-        print(f"\nInitializing data for {symbol}...")
+        print(f"\nInitializing data for {asset}...")
         print("Initializing 1h data...")
         ohlcv_1h = initialize_1h_data()
         print("Initializing 5m data...")
         ohlcv_5m = initialize_5m_data()
-        print(f"\n{symbol} is trading live on BingX Perpetual Futures")
+        print(f"\n{asset} is trading live on BingX Perpetual Futures")
         print(f"BingX Perpetual Futures Balance: {balance:.2f} USDT")
 
         # Calculate initial trends and price for display
@@ -427,7 +433,7 @@ def main():
 
             balance = get_account_balance()
             if balance <= 0:
-                print(f"No available balance for {symbol}; trading stopped.")
+                print(f"No available balance for {asset}; trading stopped.")
                 break
             
             ohlcv_5m = fetch_ohlcv('5m', limit=60, is_initializing=False)
@@ -445,42 +451,42 @@ def main():
             last_3_candles = ohlcv_5m.tail(STOP_LOSS_CANDLES)[['high', 'low']] if len(ohlcv_5m) >= STOP_LOSS_CANDLES else pd.DataFrame()
 
             if in_position:
-                current_price = exchange.fetch_ticker(futures)['last']
+                current_price = exchange.fetch_ticker(symbol)['last']
                 # First, check if the broker has already closed the position
                 if not check_open_positions():
                 # Trade was closed externally; assume current_price is the exit price
                     if position == 'Long':
                         pnl = (current_price - entry_price) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Long: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
+                        print(f"\nTrade Closed for {asset}:\nExit Long: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
                     elif position == 'Short':
                         pnl = (entry_price - current_price) * position_size
-                        print(f"\nTrade Closed for {symbol}:\nExit Short: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
+                        print(f"\nTrade Closed for {asset}:\nExit Short: {current_price:.4f}\nPnL: {pnl:.4f} USDT")
                         in_position = False
                         balance = get_account_balance()
-                        print(f"Account Balance for {symbol}: {balance:.4f} USDT")
+                        print(f"Account Balance for {asset}: {balance:.4f} USDT")
                     else:
                         # Existing price condition checks if the position is still reported as open
                         if position == 'Long':
                             if current_price <= stop_loss:
                                 pnl = (stop_loss - entry_price) * position_size
-                                print(f"\nTrade Closed for {symbol}:\nExit Long: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                                print(f"\nTrade Closed for {asset}:\nExit Long: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
                                 in_position = False
                             elif current_price >= take_profit:
                                 pnl = (take_profit - entry_price) * position_size
-                                print(f"\nTrade Closed for {symbol}:\nExit Long: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                                print(f"\nTrade Closed for {asset}:\nExit Long: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
                                 in_position = False
                         elif position == 'Short':
                             if current_price >= stop_loss:
                                 pnl = (entry_price - stop_loss) * position_size
-                                print(f"\nTrade Closed for {symbol}:\nExit Short: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
+                                print(f"\nTrade Closed for {asset}:\nExit Short: {stop_loss:.4f}\nPnL: {pnl:.4f} USDT")
                                 in_position = False
                             elif current_price <= take_profit:
                                 pnl = (entry_price - take_profit) * position_size
-                                print(f"\nTrade Closed for {symbol}:\nExit Short: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
+                                print(f"\nTrade Closed for {asset}:\nExit Short: {take_profit:.4f}\nPnL: {pnl:.4f} USDT")
                                 in_position = False
                             if not in_position:
                                 balance = get_account_balance()
-                                print(f"Account Balance for {symbol}: {balance:.4f} USDT")
+                                print(f"Account Balance for {asset}: {balance:.4f} USDT")
             elif not check_open_positions():
                 position, entry_price, stop_loss, take_profit, position_size, margin = execute_trade(current_trend, ema_data, balance, last_3_candles, previous_5m_trend)
                 if position:
@@ -490,7 +496,7 @@ def main():
     except KeyboardInterrupt:
         print_summary(initial_balance)
     except Exception as e:
-        print(f"\nError encountered for {symbol}: {e}")
+        print(f"\nError encountered for {asset}: {e}")
         print_summary(initial_balance)
 
 if __name__ == "__main__":
