@@ -30,8 +30,6 @@ def get_crypto_asset():
         response = requests.get(url)
         response.raise_for_status()
         contracts = response.json().get('data', [])
-        
-        # Create a mapping of asset symbols to their BingX trading pairs
         valid_assets = {contract['asset'].upper(): contract['symbol'] for contract in contracts}
         
         while True:
@@ -310,7 +308,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         take_profit = entry_price + (3 * stop_distance)
         notional_value = position_size * entry_price  # For display purposes only
         try:
-            print(f"Trade found: Placing long order with {position_size:.4f} ADA")
+            print(f"Trade found: Placing long order with {position_size:.4f} {asset}")
             exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated", 'type': 'future', 'side': 'BOTH'})
             order = exchange.create_order(
                 symbol,
@@ -345,7 +343,7 @@ def execute_trade(trend, ema_data, current_balance, last_3_candles, previous_5m_
         take_profit = entry_price - (3 * stop_distance)
         notional_value = position_size * entry_price  # For display purposes only
         try:
-            print(f"Trade found: Placing short order with {position_size:.4f} ADA")
+            print(f"Trade found: Placing short order with {position_size:.4f} {asset}")
             exchange.set_leverage(leverage, symbol, params={"marginMode": 'isolated', 'type': 'future', 'side': 'BOTH'})
             order = exchange.create_order(
                 symbol,
